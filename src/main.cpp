@@ -21,14 +21,15 @@
  * 依赖库 (platformio.ini 已配置):
  *   - Adafruit SSD1306
  *   - Adafruit GFX Library
- *   - ESP32 BLE Keyboard
+ *   - NimBLE-Arduino
+ *   - ESP32-NimBLE-Keyboard
  */
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <BleKeyboard.h>
+#include <NimBleKeyboard.h>
 #include "font.h"
 
 // ===== 硬件配置 =====

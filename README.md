@@ -35,7 +35,8 @@
 
 - [Adafruit SSD1306](https://github.com/adafruit/Adafruit_SSD1306) ^2.5.7
 - [Adafruit GFX Library](https://github.com/adafruit/Adafruit-GFX-Library) ^1.11.5
-- [ESP32 BLE Keyboard](https://github.com/T-vK/ESP32-BLE-Keyboard) ^0.3.2
+- [NimBLE-Arduino](https://github.com/h2zero/NimBLE-Arduino) ^2.1.0
+- [ESP32 NIMBLE Keyboard](https://github.com/Berg0162/ESP32-NIMBLE-Keyboard) v2.0.1（已内置在 `lib/ESP32-NIMBLE-Keyboard`）
 
 ## 构建
 
@@ -43,21 +44,13 @@
 pio run
 ```
 
-## 修改说明
+## NimBLE 说明
 
-### 库文件修改
+项目已从传统 ESP32 BLE Keyboard 库切换到 NimBLE 版本，以降低 RAM 和 Flash 占用。
 
-修改了 `ESP32 BLE Keyboard` 库的 `BleKeyboard.cpp` 第 130 行，将 BLE 安全认证模式从 `ESP_LE_AUTH_REQ_SC_MITM_BOND` 改为 `ESP_LE_AUTH_BOND`，以解决蓝牙反复断开的问题。
+当前使用 `NimBleKeyboard.h` 头文件，代码仍保持原来的 `BleKeyboard bleKeyboard;` 风格。
 
-```cpp
-// 修改前
-pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
-
-// 修改后
-pSecurity->setAuthenticationMode(ESP_LE_AUTH_BOND);
-```
-
-此修改位于 `.pio/libdeps/` 目录下的本地库文件，重新安装库（`pio lib update`）后需要再次手动修改。
+键盘库已复制到项目本地 `lib/ESP32-NIMBLE-Keyboard`，因此不需要在 `platformio.ini` 中从 GitHub 下载该库。
 
 ## 项目结构
 
@@ -67,5 +60,6 @@ pSecurity->setAuthenticationMode(ESP_LE_AUTH_BOND);
 │   ├── main.cpp            # 主程序（BLE 键盘 + OLED 显示）
 │   ├── font.h              # 字模 + Claude Logo 声明
 │   └── font.c              # 字模 + Claude Logo 数据
-└── lib/                    # 第三方库目录
+└── lib/
+    └── ESP32-NIMBLE-Keyboard # 本地内置的 NimBLE 键盘库
 ```
