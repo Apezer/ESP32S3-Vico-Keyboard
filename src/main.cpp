@@ -18,11 +18,14 @@
  *   K7 -> GPIO 15  (m)
  *   K8 -> GPIO 16  (a)
  *
+ *   WS2812B DIN -> GPIO 17
+ *
  * 依赖库 (platformio.ini 已配置):
  *   - Adafruit SSD1306
  *   - Adafruit GFX Library
  *   - NimBLE-Arduino
  *   - ESP32-NimBLE-Keyboard
+ *   - FastLED
  */
 
 #include <Arduino.h>
@@ -31,6 +34,7 @@
 #include <Adafruit_SSD1306.h>
 #include <NimBleKeyboard.h>
 #include "font.h"
+#include "rgb_led.h"
 
 // ===== 硬件配置 =====
 #define SCREEN_WIDTH    128
@@ -167,6 +171,9 @@ void setup() {
         pinMode(KEY_PINS[i], INPUT_PULLUP);
     }
 
+    // 初始化 LED 灯带
+    rgbLedInit();
+
     // 开机画面
     showSplash();
     delay(2000);
@@ -176,6 +183,9 @@ void setup() {
 // ===== loop =====
 void loop() {
     unsigned long now = millis();
+
+    // 更新 LED 灯效
+    rgbLedUpdate();
 
     // 未连接时定期刷新界面
     if (!bleKeyboard.isConnected()) {
@@ -203,6 +213,10 @@ void loop() {
     if (changed) {
         for (uint8_t i = 0; i < NUM_KEYS; i++) {
             if (key_state[i] && !last_reported[i]) {
+                // Z 键按下切换灯效
+                if (i == 0) {
+                    rgbLedNextEffect();
+                }
                 bleKeyboard.press(KEY_CHARS[i]);
             } else if (!key_state[i] && last_reported[i]) {
                 bleKeyboard.release(KEY_CHARS[i]);
