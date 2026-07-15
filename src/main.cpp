@@ -18,11 +18,14 @@
  *   K7 -> GPIO 15  (m)
  *   K8 -> GPIO 16  (a)
  *
+ *   WS2812B DIN -> GPIO 17
+ *
  * 依赖库 (platformio.ini 已配置):
  *   - Adafruit SSD1306
  *   - Adafruit GFX Library
  *   - NimBLE-Arduino
  *   - ESP32-NimBLE-Keyboard
+ *   - FastLED_min
  */
 
 #include <Arduino.h>
@@ -31,6 +34,7 @@
 #include <Adafruit_SSD1306.h>
 #include <NimBleKeyboard.h>
 #include "font.h"
+#include "rbg_led.h"
 
 // ===== 硬件配置 =====
 #define SCREEN_WIDTH    128
@@ -63,6 +67,23 @@ static bool display_dirty = true;
 // ===== 创建对象 =====
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 BleKeyboard bleKeyboard("Vico Keyboard ESP32-S3", "Apezer", 100);
+
+// ===== 按键事件处理 =====
+void handleKeyPress(uint8_t index) {
+    if (index == 0) {
+        rbgLedNextEffect();
+    }
+
+    if (bleKeyboard.isConnected()) {
+        bleKeyboard.press(KEY_CHARS[index]);
+    }
+}
+
+void handleKeyRelease(uint8_t index) {
+    if (bleKeyboard.isConnected()) {
+        bleKeyboard.release(KEY_CHARS[index]);
+    }
+}
 
 // ===== 开机画面 =====
 void showSplash() {
@@ -167,6 +188,9 @@ void setup() {
         pinMode(KEY_PINS[i], INPUT_PULLUP);
     }
 
+    // 初始化 RGB 灯带
+    rbgLedInit();
+
     // 开机画面
     showSplash();
     delay(2000);
@@ -177,15 +201,8 @@ void setup() {
 void loop() {
     unsigned long now = millis();
 
-    // 未连接时定期刷新界面
-    if (!bleKeyboard.isConnected()) {
-        static unsigned long last_draw = 0;
-        if (now - last_draw > 500) {
-            last_draw = now;
-            renderKeyStatus();
-        }
-        return;
-    }
+    // 非阻塞更新 RGB 灯效
+    rbgLedUpdate();
 
     // 扫描按键 + 去抖
     bool changed = false;
@@ -203,13 +220,23 @@ void loop() {
     if (changed) {
         for (uint8_t i = 0; i < NUM_KEYS; i++) {
             if (key_state[i] && !last_reported[i]) {
-                bleKeyboard.press(KEY_CHARS[i]);
+                handleKeyPress(i);
             } else if (!key_state[i] && last_reported[i]) {
-                bleKeyboard.release(KEY_CHARS[i]);
+                handleKeyRelease(i);
             }
             last_reported[i] = key_state[i];
         }
         display_dirty = true;
+    }
+
+    // 未连接时定期刷新界面
+    if (!bleKeyboard.isConnected()) {
+        static unsigned long last_draw = 0;
+        if (now - last_draw > 500) {
+            last_draw = now;
+            renderKeyStatus();
+        }
+        return;
     }
 
     // 按键状态变化时刷新 OLED
