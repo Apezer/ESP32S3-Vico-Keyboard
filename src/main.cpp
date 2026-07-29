@@ -49,7 +49,7 @@
 #define DEBOUNCE_MS     10
 
 // ===== 按键配置 =====
-const uint8_t KEY_PINS[NUM_KEYS] = {4, 5, 6, 7, 8, 14, 15, 16};
+const uint8_t KEY_PINS[NUM_KEYS] = {18, 5, 6, 7, 8, 14, 15, 16};
 
 const char KEY_CHARS[NUM_KEYS] = {'z', 'x', 'c', 'v', 'b', 'n', 'm', 'a'};
 
@@ -162,7 +162,7 @@ void renderKeyStatus() {
     display.setTextColor(SSD1306_WHITE);
     display.setTextSize(1);
     display.setCursor(0, 54);
-    display.print("4 5 6 7 8 14 15 16");
+    display.print("18 5 6 7 8 14 15 16");
 
     display.display();
 }
