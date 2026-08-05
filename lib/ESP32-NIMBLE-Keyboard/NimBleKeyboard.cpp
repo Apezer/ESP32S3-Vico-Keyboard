@@ -136,6 +136,17 @@ void BleKeyboard::begin(void)
 
 void BleKeyboard::end(void)
 {
+  if (this->isConnected()) {
+    this->releaseAll();
+  }
+
+  NimBLEDevice::deinit(true);
+  this->connected = false;
+  this->hid = nullptr;
+  this->inputKeyboard = nullptr;
+  this->outputKeyboard = nullptr;
+  this->inputMediaKeys = nullptr;
+  this->advertising = nullptr;
 }
 
 bool BleKeyboard::isConnected(void) {
@@ -174,11 +185,11 @@ void BleKeyboard::set_version(uint16_t version) {
 	this->version = version; 
 }
 
-void BleKeyboard::sendReport(KeyReport* keys)
+void BleKeyboard::sendReport(BleKeyReport* keys)
 {
   if (this->isConnected())
   {
-    this->inputKeyboard->setValue((uint8_t*)keys, sizeof(KeyReport));
+    this->inputKeyboard->setValue((uint8_t*)keys, sizeof(BleKeyReport));
     this->inputKeyboard->notify();    
     // vTaskDelay(delayTicks);
     this->delay_ms(_delay_ms);

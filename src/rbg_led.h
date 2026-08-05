@@ -1,7 +1,7 @@
 /**
  * rbg_led.h - WS2812B RGB strip effects.
  *
- * Hardware: 8 WS2812B LEDs, DIN on GPIO 17.
+ * Hardware: 8 WS2812B LEDs, DIN on GPIO 8.
  */
 
 #ifndef RBG_LED_H
@@ -9,7 +9,7 @@
 
 #include <Arduino.h>
 
-#define RBG_LED_PIN         17
+#define RBG_LED_PIN         8
 #define RBG_LED_COUNT       8
 #define RBG_LED_BRIGHTNESS  40
 
