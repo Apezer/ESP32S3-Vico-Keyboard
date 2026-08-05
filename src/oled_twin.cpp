@@ -4,17 +4,19 @@
 #include "tusb.h"
 
 namespace {
-constexpr uint8_t PROTOCOL_VERSION = 1;
+constexpr uint8_t PROTOCOL_VERSION = 2;
 constexpr uint8_t DISPLAY_WIDTH = 128;
 constexpr uint8_t DISPLAY_HEIGHT = 64;
 constexpr uint8_t SSD1306_PAGE_LAYOUT = 1;
 constexpr uint8_t FIRMWARE_VERSION_MAJOR = 0;
-constexpr uint8_t FIRMWARE_VERSION_MINOR = 3;
+constexpr uint8_t FIRMWARE_VERSION_MINOR = 5;
 constexpr uint8_t FIRMWARE_VERSION_PATCH = 0;
 }
 
-void OledTwinTransport::begin() {
+void OledTwinTransport::begin(KeyProfileManager *profiles) {
     if (started_) return;
+
+    profiles_ = profiles;
 
     // Four incoming packets are sufficient for commands, but a larger queue also
     // tolerates short host bursts without ever blocking the key scanning loop.
@@ -23,9 +25,22 @@ void OledTwinTransport::begin() {
     started_ = true;
 }
 
+bool OledTwinTransport::takeProfileChanged() {
+    const bool changed = profileChanged_;
+    profileChanged_ = false;
+    return changed;
+}
+
+void OledTwinTransport::notifyActiveProfileChanged() {
+    // Keep one coalesced event. If the user switches several times before the
+    // endpoint becomes ready, the host only needs the final active slot.
+    if (profiles_ != nullptr) profileEventPending_ = true;
+}
+
 void OledTwinTransport::resetSession() {
     subscribed_ = false;
     controlPacketPending_ = false;
+    profileEventPending_ = false;
     txState_ = TxState::IDLE;
     txOffset_ = 0;
 
@@ -52,6 +67,13 @@ void OledTwinTransport::update(bool usbMounted) {
 
     if (controlPacketPending_) {
         sendControlPacket();
+        return;
+    }
+
+    // Device-originated state changes are more important than display frames
+    // and are sent outside the key scanning path.
+    if (profileEventPending_) {
+        if (sendProfileChanged()) profileEventPending_ = false;
         return;
     }
 
@@ -84,15 +106,68 @@ void OledTwinTransport::processHostCommand() {
             }
             break;
 
+        case Command::PROFILE_BEGIN: {
+            ProfileResult result = ProfileResult::INVALID_BINDING;
+            const uint8_t profileIndex = payloadLength >= 2 ? packet[3] : 0xFF;
+            if (profiles_ != nullptr && payloadLength >= 2 && packet[2] == 1) {
+                result = profiles_->beginUpdate(profileIndex);
+            }
+            queueCommandAck(command, result, profileIndex);
+            break;
+        }
+
+        case Command::PROFILE_SET_KEY: {
+            const uint8_t profileIndex = payloadLength >= 1 ? packet[2] : 0xFF;
+            const uint8_t keyIndex = payloadLength >= 2 ? packet[3] : 0xFF;
+            ProfileResult result = ProfileResult::INVALID_BINDING;
+            if (profiles_ != nullptr && payloadLength >= 7) {
+                const KeyBinding binding = {
+                    static_cast<KeyActionType>(packet[4]),
+                    packet[5],
+                    packet[6],
+                    static_cast<uint16_t>(packet[7] | (packet[8] << 8)),
+                };
+                result = profiles_->setPendingKey(profileIndex, keyIndex, binding);
+            }
+            queueCommandAck(command, result, profileIndex);
+            break;
+        }
+
+        case Command::PROFILE_COMMIT: {
+            const uint8_t profileIndex = payloadLength >= 1 ? packet[2] : 0xFF;
+            ProfileResult result = ProfileResult::INVALID_BINDING;
+            if (profiles_ != nullptr && payloadLength >= 6) {
+                const bool activate = packet[3] != 0;
+                const uint32_t expectedCrc =
+                    static_cast<uint32_t>(packet[4]) |
+                    (static_cast<uint32_t>(packet[5]) << 8) |
+                    (static_cast<uint32_t>(packet[6]) << 16) |
+                    (static_cast<uint32_t>(packet[7]) << 24);
+                result = profiles_->commitUpdate(profileIndex, expectedCrc, activate);
+                if (result == ProfileResult::OK) profileChanged_ = true;
+            }
+            queueCommandAck(command, result, profileIndex);
+            break;
+        }
+
+        case Command::PROFILE_SET_ACTIVE: {
+            const uint8_t profileIndex = payloadLength >= 1 ? packet[2] : 0xFF;
+            const ProfileResult result = profiles_ != nullptr && payloadLength >= 1
+                ? profiles_->setActiveProfile(profileIndex)
+                : ProfileResult::INVALID_SLOT;
+            if (result == ProfileResult::OK) profileChanged_ = true;
+            queueCommandAck(command, result, profileIndex);
+            break;
+        }
+
         default:
-            // Commands for key mappings and custom OLED uploads are versioned
-            // separately and intentionally ignored until their handlers exist.
+            // Custom OLED upload commands are versioned separately.
             break;
     }
 }
 
 void OledTwinTransport::queueHelloAck() {
-    const uint8_t payload[] = {
+    uint8_t payload[13 + VICO_PROFILE_COUNT * 4] = {
         PROTOCOL_VERSION,
         DISPLAY_WIDTH,
         DISPLAY_HEIGHT,
@@ -101,10 +176,39 @@ void OledTwinTransport::queueHelloAck() {
         FIRMWARE_VERSION_MINOR,
         FIRMWARE_VERSION_PATCH,
         'V', 'I', 'C', 'O',
+        VICO_PROFILE_COUNT,
+        static_cast<uint8_t>(profiles_ != nullptr ? profiles_->activeProfile() : 0),
     };
+
+    for (uint8_t profile = 0; profile < VICO_PROFILE_COUNT; ++profile) {
+        const uint32_t crc = profiles_ != nullptr
+            ? profiles_->storedProfileCrc(profile)
+            : 0;
+        writeUint32(payload + 13 + profile * 4, crc);
+    }
 
     std::memset(controlPacket_, 0, REPORT_BYTES);
     controlPacket_[0] = static_cast<uint8_t>(Command::HELLO_ACK);
+    controlPacket_[1] = sizeof(payload);
+    std::memcpy(controlPacket_ + 2, payload, sizeof(payload));
+    controlPacket_[REPORT_BYTES - 1] = packetChecksum(controlPacket_);
+    controlPacketPending_ = true;
+}
+
+void OledTwinTransport::queueCommandAck(
+    Command command,
+    ProfileResult result,
+    uint8_t profileIndex
+) {
+    const uint8_t payload[] = {
+        static_cast<uint8_t>(command),
+        static_cast<uint8_t>(result),
+        profileIndex,
+        static_cast<uint8_t>(profiles_ != nullptr ? profiles_->activeProfile() : 0),
+    };
+
+    std::memset(controlPacket_, 0, REPORT_BYTES);
+    controlPacket_[0] = static_cast<uint8_t>(Command::COMMAND_ACK);
     controlPacket_[1] = sizeof(payload);
     std::memcpy(controlPacket_ + 2, payload, sizeof(payload));
     controlPacket_[REPORT_BYTES - 1] = packetChecksum(controlPacket_);
@@ -126,6 +230,13 @@ bool OledTwinTransport::sendControlPacket() {
     controlPacketPending_ = false;
     lastReportAt_ = millis();
     return true;
+}
+
+bool OledTwinTransport::sendProfileChanged() {
+    const uint8_t payload[] = {
+        static_cast<uint8_t>(profiles_ != nullptr ? profiles_->activeProfile() : 0),
+    };
+    return sendPacket(Command::PROFILE_ACTIVE_CHANGED, payload, sizeof(payload));
 }
 
 bool OledTwinTransport::sendFramePacket() {

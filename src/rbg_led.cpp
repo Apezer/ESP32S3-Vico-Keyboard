@@ -8,6 +8,9 @@
 
 static CRGB leds[RBG_LED_COUNT];
 static uint8_t current_effect = RBG_EFFECT_RAINBOW;
+static uint8_t brightness_percent = 50;
+static uint8_t speed_percent = 100;
+static bool leds_enabled = true;
 
 static const char *const EFFECT_NAMES[] = {
     "Rainbow",
@@ -53,16 +56,24 @@ static bool elapsed(unsigned long &last_ms, unsigned long interval_ms) {
     return true;
 }
 
+static unsigned long scaledInterval(unsigned long base_ms) {
+    return max(5UL, base_ms * 100UL / speed_percent);
+}
+
+static uint8_t peakBrightness() {
+    return static_cast<uint8_t>(brightness_percent * 255UL / 100UL);
+}
+
 static void effectRainbow() {
     static uint8_t hue = 0;
     static unsigned long last_ms = 0;
 
-    if (!elapsed(last_ms, 30)) {
+    if (!elapsed(last_ms, scaledInterval(30))) {
         return;
     }
 
     for (uint8_t i = 0; i < RBG_LED_COUNT; i++) {
-        leds[i] = hsvToRgb(hue + i * 32, 255, RBG_LED_BRIGHTNESS);
+        leds[i] = hsvToRgb(hue + i * 32, 255, peakBrightness());
     }
     hue += 3;
     showLeds();
@@ -73,13 +84,14 @@ static void effectBreathing() {
     static int8_t direction = 1;
     static unsigned long last_ms = 0;
 
-    if (!elapsed(last_ms, 18)) {
+    if (!elapsed(last_ms, scaledInterval(18))) {
         return;
     }
 
     value = value + direction * 2;
-    if (value >= RBG_LED_BRIGHTNESS) {
-        value = RBG_LED_BRIGHTNESS;
+    const uint8_t peak = peakBrightness();
+    if (value >= peak) {
+        value = peak;
         direction = -1;
     } else if (value <= 2) {
         value = 2;
@@ -98,7 +110,7 @@ static void effectComet() {
     static uint8_t hue = 0;
     static unsigned long last_ms = 0;
 
-    if (!elapsed(last_ms, 55)) {
+    if (!elapsed(last_ms, scaledInterval(55))) {
         return;
     }
 
@@ -108,7 +120,7 @@ static void effectComet() {
         leds[i].b = leds[i].b > 48 ? leds[i].b - 48 : 0;
     }
 
-    leds[pos] = hsvToRgb(hue, 255, RBG_LED_BRIGHTNESS);
+    leds[pos] = hsvToRgb(hue, 255, peakBrightness());
     pos = (pos + 1) % RBG_LED_COUNT;
     if (pos == 0) {
         hue += 40;
@@ -121,11 +133,11 @@ static void effectColorWipe() {
     static uint8_t hue = 0;
     static unsigned long last_ms = 0;
 
-    if (!elapsed(last_ms, 85)) {
+    if (!elapsed(last_ms, scaledInterval(85))) {
         return;
     }
 
-    leds[pos] = hsvToRgb(hue, 255, RBG_LED_BRIGHTNESS);
+    leds[pos] = hsvToRgb(hue, 255, peakBrightness());
     pos++;
     if (pos >= RBG_LED_COUNT) {
         pos = 0;
@@ -140,12 +152,12 @@ static void effectColorWipe() {
 static void effectFire() {
     static unsigned long last_ms = 0;
 
-    if (!elapsed(last_ms, 45)) {
+    if (!elapsed(last_ms, scaledInterval(45))) {
         return;
     }
 
     for (uint8_t i = 0; i < RBG_LED_COUNT; i++) {
-        const uint8_t flicker = random(12, RBG_LED_BRIGHTNESS + 1);
+        const uint8_t flicker = random(12, peakBrightness() + 1);
         leds[i] = CRGB(flicker, flicker / 3, 0);
     }
     showLeds();
@@ -155,11 +167,11 @@ static void effectSolidFade() {
     static uint8_t hue = 0;
     static unsigned long last_ms = 0;
 
-    if (!elapsed(last_ms, 50)) {
+    if (!elapsed(last_ms, scaledInterval(50))) {
         return;
     }
 
-    const CRGB color = hsvToRgb(hue, 255, RBG_LED_BRIGHTNESS);
+    const CRGB color = hsvToRgb(hue, 255, peakBrightness());
     for (uint8_t i = 0; i < RBG_LED_COUNT; i++) {
         leds[i] = color;
     }
@@ -179,12 +191,12 @@ static const EffectFunc EFFECT_FUNCS[] = {
 
 void rbgLedInit() {
     FASTLED_MIN_SETUP(RBG_LED_PIN, leds, RBG_LED_COUNT);
-    FastLED_min<RBG_LED_PIN>.setBrightness(RBG_LED_BRIGHTNESS);
+    FastLED_min<RBG_LED_PIN>.setBrightness(255);
     clearLeds();
 }
 
 void rbgLedUpdate() {
-    if (current_effect < RBG_EFFECT_COUNT) {
+    if (leds_enabled && current_effect < RBG_EFFECT_COUNT) {
         EFFECT_FUNCS[current_effect]();
     }
 }
@@ -210,4 +222,29 @@ const char *rbgLedGetEffectName() {
         return EFFECT_NAMES[current_effect];
     }
     return "Unknown";
+}
+
+void rbgLedSetBrightness(uint8_t percent) {
+    brightness_percent = constrain(percent, 25, 100);
+}
+
+uint8_t rbgLedGetBrightness() {
+    return brightness_percent;
+}
+
+void rbgLedSetSpeed(uint8_t percent) {
+    speed_percent = constrain(percent, 50, 200);
+}
+
+uint8_t rbgLedGetSpeed() {
+    return speed_percent;
+}
+
+void rbgLedSetEnabled(bool enabled) {
+    leds_enabled = enabled;
+    clearLeds();
+}
+
+bool rbgLedIsEnabled() {
+    return leds_enabled;
 }

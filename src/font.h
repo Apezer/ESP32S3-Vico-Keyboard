@@ -1,8 +1,8 @@
 /**
- * font.h - 字模数据声明
+ * font.h - Bitmap font and icon data declarations
  *
- * 包含 OLED 显示用的位图图标数据
- * 所有图标均为单色 (1-bit) 位图
+ * Contains bitmap icon data used by the OLED display.
+ * All icons are monochrome (1-bit) bitmaps.
  */
 
 #ifndef FONT_H
@@ -14,17 +14,17 @@
 extern "C" {
 #endif
 
-// ===== 16x16 表情图标 =====
-extern const uint8_t smiley_bmp[];      // 笑脸
-extern const uint8_t sad_bmp[];         // 悲伤脸
-extern const uint8_t surprised_bmp[];   // 惊讶脸
-extern const uint8_t heart_icon[];      // 心形
+// ===== 16x16 face icons =====
+extern const uint8_t smiley_bmp[];      // Smiley face
+extern const uint8_t sad_bmp[];         // Sad face
+extern const uint8_t surprised_bmp[];   // Surprised face
+extern const uint8_t heart_icon[];      // Heart
 
-// ===== 32x32 图标 =====
-extern const uint8_t wifi_icon[];       // WiFi 图标
+// ===== 32x32 icons =====
+extern const uint8_t wifi_icon[];       // Wi-Fi icon
 
 // ===== Claude Logo =====
-extern const uint8_t BT_ICON[];         // 蓝牙图标 8x8
+extern const uint8_t BT_ICON[];         // Bluetooth icon (8x8)
 
 #define CLAUDE_LOGO_WIDTH 64
 #define CLAUDE_LOGO_HEIGHT 32

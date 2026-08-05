@@ -29,5 +29,11 @@ void rbgLedNextEffect();
 void rbgLedSetEffect(uint8_t effect);
 uint8_t rbgLedGetEffect();
 const char *rbgLedGetEffectName();
+void rbgLedSetBrightness(uint8_t percent);
+uint8_t rbgLedGetBrightness();
+void rbgLedSetSpeed(uint8_t percent);
+uint8_t rbgLedGetSpeed();
+void rbgLedSetEnabled(bool enabled);
+bool rbgLedIsEnabled();
 
 #endif /* RBG_LED_H */

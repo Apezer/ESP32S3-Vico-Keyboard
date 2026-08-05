@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include "USBHIDVendor.h"
+#include "key_profiles.h"
 
 /**
  * Streams the exact SSD1306 framebuffer to the desktop application.
@@ -17,7 +18,7 @@ public:
     static constexpr size_t FRAME_BYTES = 128 * 64 / 8;
 
     /** Register the Vendor HID report before USB.begin() is called. */
-    void begin();
+    void begin(KeyProfileManager *profiles);
 
     /** Drop the current host subscription when native USB is disconnected. */
     void resetSession();
@@ -31,6 +32,12 @@ public:
     /** Process host commands and send at most one queued report. */
     void update(bool usbMounted);
 
+    /** True once after a command changes the active profile or its bindings. */
+    bool takeProfileChanged();
+
+    /** Queue an unsolicited status event after the keyboard changes profile locally. */
+    void notifyActiveProfileChanged();
+
 private:
     static constexpr uint8_t REPORT_BYTES = 63;
     static constexpr uint8_t MAX_PAYLOAD_BYTES = 60;
@@ -40,10 +47,16 @@ private:
     enum class Command : uint8_t {
         HELLO = 0x01,
         DISPLAY_SUBSCRIBE = 0x02,
+        PROFILE_BEGIN = 0x10,
+        PROFILE_SET_KEY = 0x11,
+        PROFILE_COMMIT = 0x12,
+        PROFILE_SET_ACTIVE = 0x13,
         HELLO_ACK = 0x81,
         FRAME_BEGIN = 0x82,
         FRAME_CHUNK = 0x83,
         FRAME_END = 0x84,
+        COMMAND_ACK = 0x90,
+        PROFILE_ACTIVE_CHANGED = 0x91,
     };
 
     enum class TxState : uint8_t {
@@ -54,10 +67,13 @@ private:
     };
 
     USBHIDVendor vendor_{REPORT_BYTES, false};
+    KeyProfileManager *profiles_ = nullptr;
     bool started_ = false;
     bool subscribed_ = false;
     bool latestFramePending_ = false;
     bool controlPacketPending_ = false;
+    bool profileEventPending_ = false;
+    bool profileChanged_ = false;
     TxState txState_ = TxState::IDLE;
     uint16_t nextFrameId_ = 1;
     uint16_t activeFrameId_ = 0;
@@ -70,8 +86,10 @@ private:
 
     void processHostCommand();
     void queueHelloAck();
+    void queueCommandAck(Command command, ProfileResult result, uint8_t profileIndex);
     void startLatestFrame();
     bool sendControlPacket();
+    bool sendProfileChanged();
     bool sendFramePacket();
     bool sendPacket(Command command, const uint8_t *payload, uint8_t payloadLength);
 
