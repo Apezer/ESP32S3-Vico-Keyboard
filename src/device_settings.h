@@ -12,7 +12,7 @@ struct __attribute__((packed)) DeviceSettingsData {
     bool rgbEnabled;
 };
 
-/** Persistent device settings independent from the five key profiles. */
+/** 独立于五套按键预设的持久化设备设置。 */
 class DeviceSettings {
 public:
     void begin();

@@ -1,7 +1,7 @@
 /**
- * rbg_led.h - WS2812B RGB strip effects.
+ * rbg_led.h - WS2812B RGB 灯带效果。
  *
- * Hardware: 8 WS2812B LEDs, DIN on GPIO 8.
+ * 硬件：8 颗 WS2812B LED，DIN 连接 GPIO 8。
  */
 
 #ifndef RBG_LED_H
@@ -36,4 +36,4 @@ uint8_t rbgLedGetSpeed();
 void rbgLedSetEnabled(bool enabled);
 bool rbgLedIsEnabled();
 
-#endif /* RBG_LED_H */
+#endif /* RBG_LED_H 结束 */

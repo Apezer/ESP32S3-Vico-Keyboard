@@ -5,37 +5,37 @@
 #include "key_profiles.h"
 
 /**
- * Streams the exact SSD1306 framebuffer to the desktop application.
+ * 将 SSD1306 的精确帧缓冲区传输到桌面应用。
  *
- * Design goals:
- * - Never send data from the key scanning path.
- * - Send at most one HID report per update() call.
- * - Keep only the newest pending frame, so a slow host cannot build a backlog.
- * - Protect every complete frame with a sequence number and CRC32.
+ * 设计目标：
+ * - 不在按键扫描路径中发送数据。
+ * - 每次 update() 调用最多发送一份 HID 报告。
+ * - 只保留最新待发送帧，避免主机速度较慢时形成积压。
+ * - 使用序列号和 CRC32 保护每个完整帧。
  */
 class OledTwinTransport {
 public:
     static constexpr size_t FRAME_BYTES = 128 * 64 / 8;
 
-    /** Register the Vendor HID report before USB.begin() is called. */
+    /** 在调用 USB.begin() 前注册 Vendor HID 报告。 */
     void begin(KeyProfileManager *profiles);
 
-    /** Drop the current host subscription when native USB is disconnected. */
+    /** 原生 USB 断开时清除当前主机订阅。 */
     void resetSession();
 
     /**
-     * Copy the latest framebuffer into the one-frame pending queue.
-     * The source uses the native Adafruit SSD1306 page-major byte layout.
+     * 将最新帧缓冲区复制到单帧待发送队列中。
+     * 数据源使用 Adafruit SSD1306 原生的页优先字节布局。
      */
     void captureFrame(const uint8_t *frame, size_t length);
 
-    /** Process host commands and send at most one queued report. */
+    /** 处理主机命令，并最多发送一份队列中的报告。 */
     void update(bool usbMounted);
 
-    /** True once after a command changes the active profile or its bindings. */
+    /** 命令更改活动预设或其绑定后返回一次 true。 */
     bool takeProfileChanged();
 
-    /** Queue an unsolicited status event after the keyboard changes profile locally. */
+    /** 键盘本地切换预设后，将主动状态事件加入队列。 */
     void notifyActiveProfileChanged();
 
 private:

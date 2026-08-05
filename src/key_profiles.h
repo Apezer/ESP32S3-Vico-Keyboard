@@ -32,10 +32,10 @@ enum class ConsumerAction : uint16_t {
 };
 
 /**
- * Compact, transport-safe key definition.
+ * 紧凑且适合传输的按键定义。
  *
- * The byte layout is also the on-wire layout used by PROFILE_SET_KEY:
- * action, modifiers, keycode, consumer low byte, consumer high byte.
+ * 该字节布局同时也是 PROFILE_SET_KEY 使用的线上格式：
+ * 动作、修饰键、键码、消费者控制低字节、消费者控制高字节。
  */
 struct __attribute__((packed)) KeyBinding {
     KeyActionType action;
@@ -60,7 +60,7 @@ enum class ProfileResult : uint8_t {
 
 class KeyProfileManager {
 public:
-    /** Load the five profiles from NVS, or install factory defaults. */
+    /** 从 NVS 加载五套预设，失败时安装出厂默认值。 */
     void begin();
 
     const KeyBinding &binding(uint8_t keyIndex) const;

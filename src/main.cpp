@@ -1,29 +1,29 @@
 /**
- * ESP32-S3 USB/BLE Dual-Mode Mini Keyboard
+ * ESP32-S3 USB/蓝牙双模式迷你键盘
  *
- * Hardware: DFRobot FireBeetle2 ESP32-S3 + 0.96-inch OLED (SSD1306, I2C)
+ * 硬件：DFRobot FireBeetle2 ESP32-S3 + 0.96 英寸 OLED（SSD1306，I2C）
  *
- * Wiring:
+ * 接线：
  *   OLED SDA -> GPIO 10
  *   OLED SCL -> GPIO 9
  *   OLED VCC -> 3.3V
  *   OLED GND -> GND
  *
- *   K1 -> GPIO 18  (Left)
- *   K2 -> GPIO 17  (Down)
- *   K3 -> GPIO 16  (Right)
- *   K4 -> GPIO 15  (Enter)
- *   K5 -> GPIO 5   (Backspace)
- *   K6 -> GPIO 6   (Up)
- *   K7 -> GPIO 7   (Ctrl + Win)
- *   K8 -> GPIO 4   (Fn, internal layer key)
+ *   K1 -> GPIO 18  （左方向键）
+ *   K2 -> GPIO 17  （下方向键）
+ *   K3 -> GPIO 16  （右方向键）
+ *   K4 -> GPIO 15  （回车键）
+ *   K5 -> GPIO 5   （退格键）
+ *   K6 -> GPIO 6   （上方向键）
+ *   K7 -> GPIO 7   （Ctrl + Win）
+ *   K8 -> GPIO 4   （Fn，内部层切换键）
  *
  *   WS2812B DIN -> GPIO 8
- *   Mode switch common -> GPIO 35
- *     LOW/GND  = BLE mode
- *     HIGH/3V3 = USB mode
+ *   模式开关公共端 -> GPIO 35
+ *     LOW/GND  = 蓝牙模式
+ *     HIGH/3V3 = USB 模式
  *
- * Dependencies (configured in platformio.ini):
+ * 依赖库（已在 platformio.ini 中配置）：
  *   - Adafruit SSD1306
  *   - Adafruit GFX Library
  *   - NimBLE-Arduino
@@ -51,7 +51,7 @@
 #error "Native USB must be enabled with ARDUINO_USB_MODE=1."
 #endif
 
-// ===== Hardware configuration =====
+// ===== 硬件配置 =====
 #define SCREEN_WIDTH    128
 #define SCREEN_HEIGHT   64
 #define OLED_RESET      -1
@@ -73,7 +73,7 @@ enum class KeyboardMode : uint8_t {
     USB,
 };
 
-// ===== Key state =====
+// ===== 按键状态 =====
 static bool key_state[NUM_KEYS] = {false};
 static bool last_reported[NUM_KEYS] = {false};
 static unsigned long last_change[NUM_KEYS] = {0};
@@ -112,7 +112,7 @@ struct SettingsMenuState {
 
 static SettingsMenuState settingsMenu;
 
-// ===== Device objects =====
+// ===== 设备对象 =====
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 BleKeyboard bleKeyboard("Vico Keyboard", "Apezer", 100);
 USBHIDKeyboard usbKeyboard;
@@ -128,7 +128,7 @@ void exitSettingsMenu();
 void handleSettingsKeyPress(uint8_t index);
 void renderSettingsMenu();
 
-/** Push the framebuffer to the physical OLED, then snapshot that exact frame. */
+/** 将帧缓冲区推送到物理 OLED，然后截取该精确画面。 */
 void commitOledFrame() {
     display.display();
     if (deviceSettings.data().oledTwinEnabled) {
@@ -169,7 +169,7 @@ void startKeyboardInterface(KeyboardMode mode) {
     if (mode == KeyboardMode::USB) {
         usb_mounted = false;
         if (!usb_started) {
-            // HID interfaces must be registered before native USB starts.
+            // 必须在原生 USB 启动前注册 HID 接口。
             USB.manufacturerName("Apezer");
             USB.productName("Vico Keyboard");
             usbKeyboard.begin();
@@ -261,18 +261,16 @@ void updateUsbConnectionState(unsigned long now) {
     }
 }
 
-// ===== Key event handling =====
+// ===== 按键事件处理 =====
 void pressHidKey(uint8_t keycode) {
     if (keyboard_mode == KeyboardMode::USB && usb_mounted) {
-        // USBHIDKeyboard::press() updates its modifier bitmap for the
-        // Arduino-style key codes 0x80-0x87, but then calls pressRaw(0).
-        // In the ESP32 Arduino core used by this project, pressRaw(0) exits
-        // without sending a report. A modifier-only binding such as
-        // Ctrl+GUI would therefore never reach the host.
+        // USBHIDKeyboard::press() 会为 Arduino 风格键码 0x80～0x87
+        // 更新修饰键位图，但随后调用 pressRaw(0)。本项目使用的
+        // ESP32 Arduino Core 中，pressRaw(0) 会直接退出且不发送报告，
+        // 因此 Ctrl+GUI 这类仅含修饰键的绑定无法到达主机。
         //
-        // Raw HID modifier usages are 0xE0-0xE7. Sending them through
-        // pressRaw() both updates the bitmap and immediately transmits the
-        // report. Non-modifier keys keep the library's normal translation.
+        // 原始 HID 修饰键 Usage 为 0xE0～0xE7。通过 pressRaw() 发送时，
+        // 会更新位图并立即传输报告；非修饰键仍使用库的常规转换逻辑。
         constexpr uint8_t ARDUINO_MODIFIER_FIRST = 0x80;
         constexpr uint8_t ARDUINO_MODIFIER_LAST = 0x87;
         constexpr uint8_t HID_MODIFIER_FIRST = 0xE0;
@@ -347,7 +345,7 @@ void pressBinding(const KeyBinding &binding) {
     }
 }
 
-/** Rebuild the complete HID report from physical state to avoid stuck modifiers. */
+/** 根据物理按键状态重建完整 HID 报告，避免修饰键卡住。 */
 void rebuildHidState() {
     releaseAllHid();
     for (uint8_t index = 0; index < NUM_KEYS; ++index) {
@@ -356,7 +354,7 @@ void rebuildHidState() {
     }
 }
 
-/** Activate a profile selected on the keyboard and notify a connected app. */
+/** 激活键盘上选择的预设，并通知已连接的软件。 */
 ProfileResult activateProfileFromKeyboard(uint8_t profileIndex) {
     const uint8_t previousProfile = keyProfiles.activeProfile();
     const ProfileResult result = keyProfiles.setActiveProfile(profileIndex);
@@ -398,12 +396,12 @@ void handleKeyRelease(uint8_t index) {
     rebuildHidState();
 }
 
-// ===== Startup screen =====
+// ===== 开机画面 =====
 void showSplash() {
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
 
-    // Center the Claude logo.
+    // 将 Claude 标志居中显示。
     display.drawBitmap(
         (SCREEN_WIDTH - CLAUDE_LOGO_WIDTH) / 2,
         (SCREEN_HEIGHT - CLAUDE_LOGO_HEIGHT) / 2,
@@ -416,10 +414,10 @@ void showSplash() {
     commitOledFrame();
 }
 
-// ===== Individual key-state rendering =====
+// ===== 单个按键状态绘制 =====
 void drawKeyBox(uint8_t index, bool pressed) {
-    // Two-row by four-column grid.
-    // Each key box is 28x14 pixels with a 2-pixel gap.
+    // 使用两行四列网格。
+    // 每个按键框为 28×14 像素，间距为 2 像素。
     const uint8_t box_w = 28;
     const uint8_t box_h = 14;
     const uint8_t gap = 2;
@@ -432,18 +430,18 @@ void drawKeyBox(uint8_t index, bool pressed) {
     uint8_t y = start_y + row * (box_h + gap);
 
     if (pressed) {
-        // Pressed: fill the box and invert the label.
+        // 按下：填充按键框并反转标签颜色。
         display.fillRect(x, y, box_w, box_h, SSD1306_WHITE);
         display.setTextColor(SSD1306_BLACK);
     } else {
-        // Released: draw an outlined box.
+        // 释放：绘制空心按键框。
         display.drawRect(x, y, box_w, box_h, SSD1306_WHITE);
         display.setTextColor(SSD1306_WHITE);
     }
 
-    // Center the key label.
+    // 将按键标签居中。
     display.setTextSize(1);
-    // Center the 6x8 font label inside the 28x14 box.
+    // 将 6×8 字体标签居中放入 28×14 按键框。
     char label[5] = {};
     KeyProfileManager::labelForBinding(
         keyProfiles.binding(index),
@@ -466,7 +464,7 @@ void renderUsbConnectionPrompt() {
     display.print("USB MODE");
     display.drawLine(0, 11, 127, 11, SSD1306_WHITE);
 
-    // Four animation frames move a USB plug toward the host port.
+    // 使用四帧动画让 USB 插头逐渐靠近主机端口。
     const uint8_t plug_x = 18 + usb_prompt_frame * 16;
     const uint8_t center_y = 31;
 
@@ -475,7 +473,7 @@ void renderUsbConnectionPrompt() {
     display.drawLine(plug_x + 14, 27, plug_x + 19, 27, SSD1306_WHITE);
     display.drawLine(plug_x + 14, 35, plug_x + 19, 35, SSD1306_WHITE);
 
-    // Host-side USB port.
+    // 主机侧 USB 端口。
     display.drawRoundRect(96, 19, 31, 25, 3, SSD1306_WHITE);
     display.drawRect(103, 26, 17, 11, SSD1306_WHITE);
     display.drawLine(107, 29, 116, 29, SSD1306_WHITE);
@@ -486,7 +484,7 @@ void renderUsbConnectionPrompt() {
     commitOledFrame();
 }
 
-// ===== On-device settings menu =====
+// ===== 设备端设置菜单 =====
 void applyOledSettings() {
     const uint8_t contrast = static_cast<uint8_t>(
         deviceSettings.data().oledBrightness * 255UL / 100UL
@@ -754,12 +752,12 @@ void selectSettingsItem() {
 }
 
 void handleSettingsKeyPress(uint8_t index) {
-    // Fixed menu controls intentionally ignore the active user profile.
-    if (index == 7) { // KEY8: exit
+    // 固定菜单控制键有意忽略当前用户预设。
+    if (index == 7) { // KEY8：退出
         exitSettingsMenu();
         return;
     }
-    if (index == 4) { // KEY5: back
+    if (index == 4) { // KEY5：返回
         settingsBack();
         return;
     }
@@ -769,19 +767,19 @@ void handleSettingsKeyPress(uint8_t index) {
     }
 
     const uint8_t count = settingsItemCount(settingsMenu.screen);
-    if (index == 5 && count > 0) { // KEY6: up
+    if (index == 5 && count > 0) { // KEY6：向上
         settingsMenu.selection = settingsMenu.selection == 0
             ? count - 1
             : settingsMenu.selection - 1;
-    } else if (index == 1 && count > 0) { // KEY2: down
+    } else if (index == 1 && count > 0) { // KEY2：向下
         settingsMenu.selection = (settingsMenu.selection + 1) % count;
-    } else if (index == 3) { // KEY4: confirm
+    } else if (index == 3) { // KEY4：确认
         selectSettingsItem();
     }
     display_dirty = true;
 }
 
-// ===== Key-state screen rendering =====
+// ===== 按键状态界面绘制 =====
 void renderKeyStatus() {
     if (settingsMenu.active) {
         renderSettingsMenu();
@@ -809,7 +807,7 @@ void renderKeyStatus() {
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
 
-    // Header: title and current connection mode.
+    // 顶栏：标题和当前连接模式。
     display.setTextSize(1);
     display.setCursor(0, 0);
     display.print("Vico ESP32-S3");
@@ -824,15 +822,15 @@ void renderKeyStatus() {
         display.print(bleKeyboard.isConnected() ? "BLE" : "...");
     }
 
-    // Divider.
+    // 分隔线。
     display.drawLine(0, 12, 127, 12, SSD1306_WHITE);
 
-    // Render all eight key states.
+    // 绘制全部八个按键状态。
     for (uint8_t i = 0; i < NUM_KEYS; i++) {
         drawKeyBox(i, key_state[i]);
     }
 
-    // Footer: GPIO mapping reference.
+    // 底栏：GPIO 映射参考。
     display.setTextColor(SSD1306_WHITE);
     display.setTextSize(1);
     display.setCursor(0, 54);
@@ -841,7 +839,7 @@ void renderKeyStatus() {
     commitOledFrame();
 }
 
-// ===== setup =====
+// ===== 初始化 =====
 void setup() {
     Serial.begin(115200);
     pinMode(MODE_SELECT_PIN, INPUT_PULLDOWN);
@@ -857,7 +855,7 @@ void setup() {
         keyboard_mode == KeyboardMode::USB ? "USB" : "BLE"
     );
 
-    // Initialize I2C and the OLED.
+    // 初始化 I2C 和 OLED。
     Wire.begin(I2C_SDA, I2C_SCL);
     if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
         Serial.println("[FAIL] SSD1306 init failed!");
@@ -869,26 +867,26 @@ void setup() {
     applyOledSettings();
     last_user_activity_at = millis();
 
-    // Load all five editable presets before keyboard interfaces start.
+    // 在键盘接口启动前加载五套可编辑预设。
     keyProfiles.begin();
 
-    // Initialize key input pins.
+    // 初始化按键输入引脚。
     for (uint8_t i = 0; i < NUM_KEYS; i++) {
         pinMode(KEY_PINS[i], INPUT_PULLUP);
     }
 
-    // Initialize the RGB strip.
+    // 初始化 RGB 灯带。
     rbgLedInit();
     applyRgbSettings();
 
     startKeyboardInterface(keyboard_mode);
 
-    // Skip the Claude Code splash and show the keyboard state immediately.
+    // 跳过 Claude Code 开机画面，直接显示键盘状态。
     renderKeyStatus();
     display_dirty = false;
 }
 
-// ===== loop =====
+// ===== 主循环 =====
 void loop() {
     updateModeSwitch();
     unsigned long now = millis();
@@ -900,10 +898,10 @@ void loop() {
         display_dirty = true;
     }
 
-    // Update the RGB effect without blocking.
+    // 非阻塞更新 RGB 灯效。
     rbgLedUpdate();
 
-    // Scan and debounce all keys.
+    // 扫描全部按键并进行消抖。
     bool changed = false;
     for (uint8_t i = 0; i < NUM_KEYS; i++) {
         bool raw = (digitalRead(KEY_PINS[i]) == LOW);
@@ -917,7 +915,7 @@ void loop() {
 
     if (changed) wakeOled();
 
-    // KEY4 + KEY8 is a physical system chord, independent of user mappings.
+    // KEY4 + KEY8 是物理系统组合键，不受用户映射影响。
     if (!settingsMenu.active && key_state[3] && key_state[7] &&
         (!last_reported[3] || !last_reported[7])) {
         enterSettingsMenu();
@@ -938,7 +936,7 @@ void loop() {
                 }
             }
         } else {
-            // Normal mode sends the active profile through USB or BLE HID.
+            // 正常模式通过 USB 或蓝牙 HID 发送当前预设。
             for (uint8_t i = 0; i < NUM_KEYS; i++) {
                 if (key_state[i] && !last_reported[i]) {
                     handleKeyPress(i);
@@ -956,7 +954,7 @@ void loop() {
 
     updateOledSleep(now);
 
-    // Refresh periodically while BLE is disconnected.
+    // 蓝牙未连接时定期刷新界面。
     if (keyboard_mode == KeyboardMode::BLE && !bleKeyboard.isConnected() &&
         !settingsMenu.active) {
         static unsigned long last_draw = 0;
@@ -967,14 +965,14 @@ void loop() {
         return;
     }
 
-    // Refresh the OLED after a key-state change.
+    // 按键状态变化后刷新 OLED。
     if (display_dirty) {
         display_dirty = false;
         renderKeyStatus();
     }
 
-    // Service digital-twin traffic only after key reports and OLED rendering.
-    // update() sends at most one 63-byte Vendor HID report per loop pass.
+    // 仅在按键报告和 OLED 绘制完成后处理数字孪生流量。
+    // 每次循环中，update() 最多发送一份 63 字节 Vendor HID 报告。
     oledTwin.update(keyboard_mode == KeyboardMode::USB && usb_mounted);
 
     if (oledTwin.takeProfileChanged()) {

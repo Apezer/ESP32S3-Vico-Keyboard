@@ -8,7 +8,7 @@
 #include <utility>
 
 namespace {
-constexpr uint32_t STORAGE_MAGIC = 0x5649434F;  // "VICO"
+constexpr uint32_t STORAGE_MAGIC = 0x5649434F;  // 魔数：“VICO”
 constexpr uint8_t STORAGE_VERSION = 1;
 constexpr char NVS_NAMESPACE[] = "vico_keys";
 constexpr char NVS_BLOB_KEY[] = "profiles";

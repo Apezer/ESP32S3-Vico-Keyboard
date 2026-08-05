@@ -4,7 +4,7 @@
 #include <cstring>
 
 namespace {
-constexpr uint32_t SETTINGS_MAGIC = 0x56534554;  // "VSET"
+constexpr uint32_t SETTINGS_MAGIC = 0x56534554;  // 魔数：“VSET”
 constexpr uint8_t SETTINGS_VERSION = 1;
 
 struct __attribute__((packed)) StoredSettings {
@@ -71,12 +71,12 @@ uint32_t DeviceSettings::oledSleepMs() const {
 
 void DeviceSettings::loadDefaults() {
     data_ = {
-        75,   // OLED brightness
-        0,    // OLED always on
-        true, // OLED digital twin enabled
-        0,    // Rainbow
-        50,   // RGB brightness
-        100,  // RGB speed
+        75,   // OLED 亮度
+        0,    // OLED 始终开启
+        true, // 启用 OLED 数字孪生
+        0,    // 彩虹灯效
+        50,   // RGB 亮度
+        100,  // RGB 速度
         true,
     };
 }

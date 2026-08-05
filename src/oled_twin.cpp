@@ -18,8 +18,8 @@ void OledTwinTransport::begin(KeyProfileManager *profiles) {
 
     profiles_ = profiles;
 
-    // Four incoming packets are sufficient for commands, but a larger queue also
-    // tolerates short host bursts without ever blocking the key scanning loop.
+    // 四个输入包足以处理命令；更大的队列还能容纳主机短时突发数据，
+    // 同时不会阻塞按键扫描循环。
     vendor_.setRxBufferSize(512);
     vendor_.begin();
     started_ = true;
@@ -32,8 +32,8 @@ bool OledTwinTransport::takeProfileChanged() {
 }
 
 void OledTwinTransport::notifyActiveProfileChanged() {
-    // Keep one coalesced event. If the user switches several times before the
-    // endpoint becomes ready, the host only needs the final active slot.
+    // 只保留一个合并事件。如果端点就绪前用户多次切换，
+    // 主机只需要最终的活动槽位。
     if (profiles_ != nullptr) profileEventPending_ = true;
 }
 
@@ -44,7 +44,7 @@ void OledTwinTransport::resetSession() {
     txState_ = TxState::IDLE;
     txOffset_ = 0;
 
-    // Discard commands that belonged to the host which just disconnected.
+    // 丢弃属于刚断开主机的命令。
     while (started_ && vendor_.available() > 0) vendor_.read();
 }
 
@@ -60,8 +60,8 @@ void OledTwinTransport::update(bool usbMounted) {
 
     processHostCommand();
 
-    // TinyUSB exposes one shared HID endpoint. Waiting for it to become ready
-    // avoids a blocking retry and leaves keyboard reports with first priority.
+    // TinyUSB 只公开一个共享 HID 端点。等待端点就绪可避免阻塞式重试，
+    // 并让键盘报告保持最高优先级。
     if (!tud_hid_ready()) return;
     if (millis() - lastReportAt_ < REPORT_INTERVAL_MS) return;
 
@@ -70,8 +70,7 @@ void OledTwinTransport::update(bool usbMounted) {
         return;
     }
 
-    // Device-originated state changes are more important than display frames
-    // and are sent outside the key scanning path.
+    // 设备发起的状态变化比显示帧更重要，并在按键扫描路径之外发送。
     if (profileEventPending_) {
         if (sendProfileChanged()) profileEventPending_ = false;
         return;
@@ -161,7 +160,7 @@ void OledTwinTransport::processHostCommand() {
         }
 
         default:
-            // Custom OLED upload commands are versioned separately.
+            // 自定义 OLED 上传命令单独进行版本管理。
             break;
     }
 }

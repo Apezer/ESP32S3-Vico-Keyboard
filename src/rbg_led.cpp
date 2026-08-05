@@ -1,5 +1,5 @@
 /**
- * rbg_led.cpp - WS2812B RGB strip effects.
+ * rbg_led.cpp - WS2812B RGB 灯带效果。
  */
 
 #include "rbg_led.h"
