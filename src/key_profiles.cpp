@@ -1,3 +1,8 @@
+/**
+ * @file key_profiles.cpp
+ * @brief 实现五套按键预设、原子更新事务、CRC32 和 NVS 持久化。
+ */
+
 #include "key_profiles.h"
 
 #include <Preferences.h>
@@ -8,6 +13,9 @@
 #include <utility>
 
 namespace {
+// =============================================================================
+// NVS 存储格式与出厂预设
+// =============================================================================
 constexpr uint32_t STORAGE_MAGIC = 0x5649434F;  // 魔数：“VICO”
 constexpr uint8_t STORAGE_VERSION = 1;
 constexpr char NVS_NAMESPACE[] = "vico_keys";
@@ -77,6 +85,10 @@ uint32_t crc32(const uint8_t *data, size_t length) {
     return ~crc;
 }
 
+// =============================================================================
+// OLED 短标签辅助函数
+// =============================================================================
+
 const char *plainKeyLabel(uint8_t keycode) {
     switch (keycode) {
         case KEY_LEFT_ARROW: return "<";
@@ -100,6 +112,10 @@ char modifierLetter(uint8_t modifiers) {
     return 0;
 }
 }
+
+// =============================================================================
+// 预设查询与原子更新事务
+// =============================================================================
 
 void KeyProfileManager::begin() {
     if (!loadFromNvs()) {
@@ -218,6 +234,10 @@ uint32_t KeyProfileManager::profileCrc(const KeyBinding *bindings) {
     return crc32(reinterpret_cast<const uint8_t *>(bindings), sizeof(KeyBinding) * VICO_KEY_COUNT);
 }
 
+// =============================================================================
+// OLED 按键标签生成
+// =============================================================================
+
 void KeyProfileManager::labelForBinding(
     const KeyBinding &binding,
     char *destination,
@@ -282,6 +302,10 @@ void KeyProfileManager::labelForBinding(
     output[used] = '\0';
     std::snprintf(destination, destinationSize, "%s", output);
 }
+
+// =============================================================================
+// 默认预设与 NVS 持久化
+// =============================================================================
 
 void KeyProfileManager::loadFactoryDefaults() {
     std::memcpy(profiles_, FACTORY_PROFILES, sizeof(profiles_));

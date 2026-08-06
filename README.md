@@ -44,6 +44,10 @@
 - USB 产品名 `Vico Keyboard`（VID/PID `3343:83CF`）
 - USB 复合 HID：标准键盘 Report + Vendor Report ID 6
 - OLED 数字孪生：按需回传 SSD1306 的 1024 字节真实帧，CRC32 校验
+- OLED 运行时页面：品牌、Coding、电脑性能、时钟日期、键盘状态和自定义像素画
+- 自定义像素画可通过 USB 或 BLE 分片传输，并在完整 CRC32 校验后显示
+- 软件状态可通过 USB Vendor HID 或自定义 BLE GATT 服务发送
+- `Fn + KEY6 / KEY7` 可向前或向后切换 OLED 页面
 - OLED 顶栏显示当前 USB、BLE 或 BLE 未连接状态
 - 默认按键映射：`左、下、右、Enter、Backspace、上、Ctrl+Win、Fn`
 - 内置五套可编辑预设并保存到 NVS，断电后保留
@@ -52,6 +56,7 @@
 - KEY4 + KEY8 打开板载设置菜单，菜单操作不会发送 HID 按键
 - 设置菜单可调整预设、OLED、RGB，并查看连接、按键测试和设备信息
 - OLED 亮度/休眠/数字孪生与 RGB 灯效/亮度/速度/开关保存到 NVS
+- OLED 默认页面和 Claude 自动覆盖设置保存到 NVS
 - 10ms 按键去抖
 - OLED 实时显示：标题栏、USB/BLE 模式、BLE 连接状态、2x4 按键网格（按下填充反转）、GPIO 映射
 

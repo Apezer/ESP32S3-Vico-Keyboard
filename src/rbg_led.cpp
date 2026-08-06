@@ -1,11 +1,17 @@
 /**
- * rbg_led.cpp - WS2812B RGB 灯带效果。
+ * @file rbg_led.cpp
+ * @brief 实现六种非阻塞 WS2812B 灯效及亮度、速度参数。
  */
 
 #include "rbg_led.h"
 
 #include <FastLED_min.h>
 
+// =============================================================================
+// 模块状态与灯效名称
+// =============================================================================
+// 所有效果函数只修改 leds[] 并根据自己的时间戳决定是否刷新，不使用 delay()，
+// 因此不会主动阻塞键盘扫描循环。
 static CRGB leds[RBG_LED_COUNT];
 static uint8_t current_effect = RBG_EFFECT_RAINBOW;
 static uint8_t brightness_percent = 50;
@@ -20,6 +26,10 @@ static const char *const EFFECT_NAMES[] = {
     "Fire",
     "Solid",
 };
+
+// =============================================================================
+// 颜色、时间和输出辅助函数
+// =============================================================================
 
 static CRGB hsvToRgb(uint8_t h, uint8_t s, uint8_t v) {
     const uint8_t region = h / 43;
@@ -63,6 +73,10 @@ static unsigned long scaledInterval(unsigned long base_ms) {
 static uint8_t peakBrightness() {
     return static_cast<uint8_t>(brightness_percent * 255UL / 100UL);
 }
+
+// =============================================================================
+// 内置灯效实现
+// =============================================================================
 
 static void effectRainbow() {
     static uint8_t hue = 0;
@@ -188,6 +202,10 @@ static const EffectFunc EFFECT_FUNCS[] = {
     effectFire,
     effectSolidFade,
 };
+
+// =============================================================================
+// 公共灯带控制接口
+// =============================================================================
 
 void rbgLedInit() {
     FASTLED_MIN_SETUP(RBG_LED_PIN, leds, RBG_LED_COUNT);

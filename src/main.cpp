@@ -1,7 +1,11 @@
 /**
- * ESP32-S3 USB/蓝牙双模式迷你键盘
+ * @file main.cpp
+ * @brief ESP32-S3 USB/蓝牙双模式 Vico Keyboard 主程序。
  *
  * 硬件：DFRobot FireBeetle2 ESP32-S3 + 0.96 英寸 OLED（SSD1306，I2C）
+ *
+ * 主循环职责：模式热切换、8 键消抖与 HID 报告、设备设置菜单、OLED 页面、
+ * Claude Code 状态展示、RGB 灯效以及 USB OLED 数字孪生传输。
  *
  * 接线：
  *   OLED SDA -> GPIO 10
@@ -44,6 +48,7 @@
 #include "font.h"
 #include "device_settings.h"
 #include "key_profiles.h"
+#include "oled_runtime.h"
 #include "oled_twin.h"
 #include "rbg_led.h"
 
@@ -51,7 +56,10 @@
 #error "Native USB must be enabled with ARDUINO_USB_MODE=1."
 #endif
 
-// ===== 硬件配置 =====
+// =============================================================================
+// 硬件引脚与基础时序
+// =============================================================================
+// KEY_PINS 按逻辑 KEY1～KEY8 排列；此顺序同时用于预设、OLED 标签和 HID 报告。
 #define SCREEN_WIDTH    128
 #define SCREEN_HEIGHT   64
 #define OLED_RESET      -1
@@ -68,12 +76,17 @@
 
 const uint8_t KEY_PINS[VICO_KEY_COUNT] = {18, 17, 16, 15, 5, 6, 7, 4};
 
+/** @brief 当前实际启用的 HID 传输模式，由 GPIO35 拨片开关热切换。 */
 enum class KeyboardMode : uint8_t {
     BLE,
     USB,
 };
 
-// ===== 按键状态 =====
+// =============================================================================
+// 按键扫描、连接和 OLED 电源运行状态
+// =============================================================================
+// key_state 保存消抖后的物理状态；last_reported 保存上一轮已处理状态。
+// 两者分离后，主循环可以只在边沿变化时发送 HID 事件。
 static bool key_state[NUM_KEYS] = {false};
 static bool last_reported[NUM_KEYS] = {false};
 static unsigned long last_change[NUM_KEYS] = {0};
@@ -92,6 +105,7 @@ static unsigned long usb_prompt_frame_at = 0;
 static unsigned long last_user_activity_at = 0;
 static bool oled_sleeping = false;
 
+/** @brief 设备端设置菜单的页面状态。 */
 enum class SettingsScreen : uint8_t {
     MAIN,
     PROFILE,
@@ -103,6 +117,7 @@ enum class SettingsScreen : uint8_t {
     FACTORY_RESET,
 };
 
+/** @brief 设置菜单导航状态；waitForRelease 防止入菜单组合键被重复消费。 */
 struct SettingsMenuState {
     bool active = false;
     bool waitForRelease = false;
@@ -112,9 +127,28 @@ struct SettingsMenuState {
 
 static SettingsMenuState settingsMenu;
 
-// ===== 设备对象 =====
+// =============================================================================
+// 硬件驱动与功能模块对象
+// =============================================================================
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-BleKeyboard bleKeyboard("Vico Keyboard", "Apezer", 100);
+OledRuntime oledRuntime;
+
+/** @brief 在标准 BLE HID 服务启动阶段追加 Vico OLED 状态 GATT 服务。 */
+class VicoBleKeyboard : public BleKeyboard {
+public:
+    VicoBleKeyboard() : BleKeyboard("Vico Keyboard", "Apezer", 100) {}
+
+    uint8_t connectionCount() {
+        return isConnected() ? 1 : 0;
+    }
+
+protected:
+    void onStarted(NimBLEServer *server) override {
+        oledRuntime.beginBle(server);
+    }
+};
+
+VicoBleKeyboard bleKeyboard;
 USBHIDKeyboard usbKeyboard;
 USBHIDConsumerControl usbConsumer;
 KeyProfileManager keyProfiles;
@@ -127,6 +161,10 @@ void enterSettingsMenu();
 void exitSettingsMenu();
 void handleSettingsKeyPress(uint8_t index);
 void renderSettingsMenu();
+
+// =============================================================================
+// OLED 帧提交、唤醒和自动休眠
+// =============================================================================
 
 /** 将帧缓冲区推送到物理 OLED，然后截取该精确画面。 */
 void commitOledFrame() {
@@ -165,6 +203,12 @@ void resetKeyTracking() {
     memset(profile_switch_consumed, 0, sizeof(profile_switch_consumed));
 }
 
+// =============================================================================
+// USB/BLE 接口生命周期与拨片热切换
+// =============================================================================
+// 切换模式时先释放旧 HID 状态并关闭旧接口，再启动目标接口，避免修饰键残留
+// 或 USB/BLE 协议栈同时持有同一组按键状态。
+
 void startKeyboardInterface(KeyboardMode mode) {
     if (mode == KeyboardMode::USB) {
         usb_mounted = false;
@@ -174,7 +218,7 @@ void startKeyboardInterface(KeyboardMode mode) {
             USB.productName("Vico Keyboard");
             usbKeyboard.begin();
             usbConsumer.begin();
-            oledTwin.begin(&keyProfiles);
+            oledTwin.begin(&keyProfiles, &oledRuntime);
             usb_started = USB.begin();
         } else {
             tud_connect();
@@ -196,6 +240,7 @@ void stopKeyboardInterface(KeyboardMode mode) {
         }
     } else {
         bleKeyboard.end();
+        oledRuntime.endBle();
     }
 }
 
@@ -261,7 +306,11 @@ void updateUsbConnectionState(unsigned long now) {
     }
 }
 
-// ===== 按键事件处理 =====
+// =============================================================================
+// HID 按键、修饰键和媒体键事件
+// =============================================================================
+// 这一层屏蔽 USB 与 BLE API 差异，上层只处理 KeyBinding 和物理按键边沿。
+
 void pressHidKey(uint8_t keycode) {
     if (keyboard_mode == KeyboardMode::USB && usb_mounted) {
         // USBHIDKeyboard::press() 会为 Arduino 风格键码 0x80～0x87
@@ -384,6 +433,14 @@ void handleKeyPress(uint8_t index) {
         return;
     }
 
+    if (fn_pressed && (index == 5 || index == 6)) {
+        profile_switch_consumed[index] = true;
+        oledRuntime.cyclePage(index == 5 ? -1 : 1);
+        display_dirty = true;
+        rebuildHidState();
+        return;
+    }
+
     rebuildHidState();
 }
 
@@ -396,7 +453,10 @@ void handleKeyRelease(uint8_t index) {
     rebuildHidState();
 }
 
-// ===== 开机画面 =====
+// =============================================================================
+// 开机画面与 USB 未连接提示
+// =============================================================================
+
 void showSplash() {
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
@@ -414,15 +474,18 @@ void showSplash() {
     commitOledFrame();
 }
 
-// ===== 单个按键状态绘制 =====
+// =============================================================================
+// 通用按键框绘制
+// =============================================================================
+
 void drawKeyBox(uint8_t index, bool pressed) {
     // 使用两行四列网格。
-    // 每个按键框为 28×14 像素，间距为 2 像素。
+    // 每个按键框为 28×13 像素，间距为 2 像素。
     const uint8_t box_w = 28;
-    const uint8_t box_h = 14;
+    const uint8_t box_h = 13;
     const uint8_t gap = 2;
     const uint8_t start_x = 4;
-    const uint8_t start_y = 18;
+    const uint8_t start_y = 16;
 
     uint8_t col = index % 4;
     uint8_t row = index / 4;
@@ -441,7 +504,7 @@ void drawKeyBox(uint8_t index, bool pressed) {
 
     // 将按键标签居中。
     display.setTextSize(1);
-    // 将 6×8 字体标签居中放入 28×14 按键框。
+    // 将 6×8 字体标签居中放入 28×13 按键框。
     char label[5] = {};
     KeyProfileManager::labelForBinding(
         keyProfiles.binding(index),
@@ -484,7 +547,12 @@ void renderUsbConnectionPrompt() {
     commitOledFrame();
 }
 
-// ===== 设备端设置菜单 =====
+// =============================================================================
+// 设备端设置菜单
+// =============================================================================
+// KEY2/KEY6 上下移动，KEY4 确认，KEY5 返回，KEY8 退出。设置修改后立即写入
+// DeviceSettings，并通过 Vendor HID/GATT 通知桌面软件保持双向一致。
+
 void applyOledSettings() {
     const uint8_t contrast = static_cast<uint8_t>(
         deviceSettings.data().oledBrightness * 255UL / 100UL
@@ -505,7 +573,7 @@ uint8_t settingsItemCount(SettingsScreen screen) {
     switch (screen) {
         case SettingsScreen::MAIN: return 8;
         case SettingsScreen::PROFILE: return 6;
-        case SettingsScreen::OLED: return 4;
+        case SettingsScreen::OLED: return 6;
         case SettingsScreen::RGB: return 5;
         case SettingsScreen::CONNECTION: return 4;
         case SettingsScreen::DEVICE_INFO: return 8;
@@ -542,6 +610,9 @@ void settingsItemLabel(
     static const char *const SLEEP_LABELS[] = {
         "ALWAYS ON", "1 MIN", "5 MIN", "10 MIN",
     };
+    static const char *const PAGE_LABELS[] = {
+        "BRAND", "CODING", "SYSTEM", "CLOCK", "DEVICE", "PIXEL ART",
+    };
 
     destination[0] = '\0';
     switch (screen) {
@@ -565,7 +636,9 @@ void settingsItemLabel(
             if (index == 0) snprintf(destination, destinationSize, "BRIGHTNESS %u%%", deviceSettings.data().oledBrightness);
             if (index == 1) snprintf(destination, destinationSize, "SLEEP %s", SLEEP_LABELS[deviceSettings.data().oledSleepOption]);
             if (index == 2) snprintf(destination, destinationSize, "TWIN %s", deviceSettings.data().oledTwinEnabled ? "ON" : "OFF");
-            if (index == 3) snprintf(destination, destinationSize, "BACK");
+            if (index == 3) snprintf(destination, destinationSize, "PAGE %s", PAGE_LABELS[deviceSettings.data().oledPage]);
+            if (index == 4) snprintf(destination, destinationSize, "CLAUDE AUTO %s", deviceSettings.data().oledAutoClaude ? "ON" : "OFF");
+            if (index == 5) snprintf(destination, destinationSize, "BACK");
             break;
         case SettingsScreen::RGB:
             if (index == 0) snprintf(destination, destinationSize, "EFFECT %s", rbgLedGetEffectName());
@@ -581,7 +654,7 @@ void settingsItemLabel(
             if (index == 3) snprintf(destination, destinationSize, "GPIO35 %s", mode_switch_raw_usb ? "HIGH" : "LOW");
             break;
         case SettingsScreen::DEVICE_INFO:
-            if (index == 0) snprintf(destination, destinationSize, "FW 0.5.0");
+            if (index == 0) snprintf(destination, destinationSize, "FW 0.6.0");
             if (index == 1) snprintf(destination, destinationSize, "PROTOCOL 2");
             if (index == 2) snprintf(destination, destinationSize, "PROFILE P%u", keyProfiles.activeProfile() + 1);
             if (index == 3) snprintf(destination, destinationSize, "MODE %s", keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
@@ -712,6 +785,12 @@ void selectSettingsItem() {
             settings.oledSleepOption = (settings.oledSleepOption + 1) % 4;
         } else if (settingsMenu.selection == 2) {
             settings.oledTwinEnabled = !settings.oledTwinEnabled;
+        } else if (settingsMenu.selection == 3) {
+            settings.oledPage = (settings.oledPage + 1) % 6;
+            oledRuntime.setPageSettings(static_cast<OledPage>(settings.oledPage), settings.oledAutoClaude);
+        } else if (settingsMenu.selection == 4) {
+            settings.oledAutoClaude = !settings.oledAutoClaude;
+            oledRuntime.setPageSettings(static_cast<OledPage>(settings.oledPage), settings.oledAutoClaude);
         } else {
             settingsBack();
         }
@@ -742,6 +821,10 @@ void selectSettingsItem() {
                 oledTwin.notifyActiveProfileChanged();
             }
             deviceSettings.factoryReset();
+            oledRuntime.configure(
+                static_cast<OledPage>(deviceSettings.data().oledPage),
+                deviceSettings.data().oledAutoClaude
+            );
             applyOledSettings();
             applyRgbSettings();
             Serial.println("Factory settings restored");
@@ -779,7 +862,250 @@ void handleSettingsKeyPress(uint8_t index) {
     display_dirty = true;
 }
 
-// ===== 按键状态界面绘制 =====
+// =============================================================================
+// OLED 运行时页面绘制
+// =============================================================================
+// 所有页面只读取 OledRuntimeSnapshot，不直接访问 BLE/USB 接收缓冲区。
+// Coding 页面动画使用 millis() 计算当前帧，不维护额外动画队列。
+
+const char *claudeStateDisplay(ClaudeState state) {
+    switch (state) {
+        case ClaudeState::READY: return "READY";
+        case ClaudeState::WORKING: return "THINK";
+        case ClaudeState::TOOL: return "TOOL";
+        case ClaudeState::WAITING: return "INPUT";
+        case ClaudeState::DONE: return "DONE";
+        case ClaudeState::ERROR_STATE: return "ERROR";
+        default: return "OFFLINE";
+    }
+}
+
+const char *claudeActivityHint(ClaudeState state) {
+    switch (state) {
+        case ClaudeState::READY: return "WAITING FOR PROMPT";
+        case ClaudeState::WORKING: return "CLAUDE IS THINKING";
+        case ClaudeState::TOOL: return "RUNNING TOOL";
+        case ClaudeState::WAITING: return "USER INPUT NEEDED";
+        case ClaudeState::DONE: return "TASK FINISHED";
+        case ClaudeState::ERROR_STATE: return "CHECK CLAUDE LOG";
+        default: return "START CLAUDE CODE";
+    }
+}
+
+void printClipped(const char *text, uint8_t maximumCharacters) {
+    if (text == nullptr) return;
+    for (uint8_t index = 0; text[index] != '\0' && index < maximumCharacters; ++index) {
+        display.write(text[index]);
+    }
+}
+
+void drawClaudeOrbitPixel(uint8_t position) {
+    constexpr uint8_t x = 94;
+    constexpr uint8_t y = 11;
+    constexpr uint8_t width = 34;
+    constexpr uint8_t height = 20;
+    if (position < width) {
+        display.drawPixel(x + position, y, SSD1306_WHITE);
+    } else if (position < width + height - 1) {
+        display.drawPixel(x + width - 1, y + position - width + 1, SSD1306_WHITE);
+    } else if (position < width * 2 + height - 2) {
+        display.drawPixel(x + width - 2 - (position - width - height + 1), y + height - 1, SSD1306_WHITE);
+    } else {
+        display.drawPixel(x, y + height - 2 - (position - width * 2 - height + 2), SSD1306_WHITE);
+    }
+}
+
+void drawClaudeThinkingAnimation(ClaudeState state) {
+    if (state != ClaudeState::WORKING) return;
+    constexpr uint8_t perimeter = 2 * (34 + 20) - 4;
+    constexpr uint8_t segmentLength = 14;
+    // 128×64 帧是参考项目 128×32 帧的两倍，降低刷新频率以减少 I2C 占用。
+    const uint8_t frame = static_cast<uint8_t>(((millis() / 180) * 6) % perimeter);
+    for (uint8_t index = 0; index < segmentLength; ++index) {
+        drawClaudeOrbitPixel((frame + index) % perimeter);
+    }
+}
+
+void drawRuntimeHeader(const char *title) {
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.print(title);
+    display.setCursor(104, 0);
+    display.printf("P%u", keyProfiles.activeProfile() + 1);
+    display.drawLine(0, 10, 127, 10, SSD1306_WHITE);
+}
+
+void drawMetricRow(const char *label, uint8_t value, uint8_t y) {
+    display.setCursor(0, y);
+    display.print(label);
+    if (value <= 100) {
+        display.setCursor(24, y);
+        display.printf("%3u", value);
+        display.drawRect(47, y, 80, 8, SSD1306_WHITE);
+        const uint8_t width = static_cast<uint8_t>(value * 76UL / 100UL);
+        if (width > 0) display.fillRect(49, y + 2, width, 4, SSD1306_WHITE);
+    } else {
+        display.setCursor(24, y);
+        display.print(" --");
+        display.drawRect(47, y, 80, 8, SSD1306_WHITE);
+    }
+}
+
+void renderBrandRuntimePage() {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+    display.setCursor(1, 1);
+    display.print(keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
+    display.setCursor(108, 1);
+    display.print("86%");
+    display.drawLine(0, 10, 127, 10, SSD1306_WHITE);
+
+    display.setTextSize(2);
+    display.setCursor(4, 15);
+    display.print("VICO");
+    display.setTextSize(1);
+    display.setCursor(5, 40);
+    display.print("CREATE YOUR FLOW");
+
+    static const uint8_t POINTS[][2] = {
+        {83, 28}, {90, 23}, {97, 32}, {104, 20}, {111, 29}, {124, 22},
+    };
+    for (size_t index = 1; index < sizeof(POINTS) / sizeof(POINTS[0]); ++index) {
+        display.drawLine(
+            POINTS[index - 1][0], POINTS[index - 1][1],
+            POINTS[index][0], POINTS[index][1],
+            SSD1306_WHITE
+        );
+    }
+    commitOledFrame();
+}
+
+void renderClaudeRuntimePage(const OledRuntimeSnapshot &runtime) {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+
+    // Coding 页只保留与 Claude 工作流直接相关的信息。
+    display.setCursor(0, 0);
+    display.print("CLAUDE CODE");
+    display.setCursor(108, 0);
+    if (keyboard_mode == KeyboardMode::USB) display.print(usb_mounted ? "USB" : "---");
+    else display.print(bleKeyboard.isConnected() ? "BLE" : "ADV");
+    display.drawLine(0, 9, 127, 9, SSD1306_WHITE);
+
+    // 大状态文字和 Claude 图标形成第一视觉层级；思考时线段沿图标外圈流动。
+    display.setTextSize(2);
+    display.setCursor(0, 14);
+    display.print(claudeStateDisplay(runtime.claudeState));
+    display.setTextSize(1);
+    display.drawBitmap(96, 13, CLAUDE_LOGO_32X16,
+        CLAUDE_LOGO_SMALL_WIDTH, CLAUDE_LOGO_SMALL_HEIGHT, SSD1306_WHITE);
+    drawClaudeThinkingAnimation(runtime.claudeState);
+    display.drawLine(0, 32, 127, 32, SSD1306_WHITE);
+
+    display.setCursor(0, 35);
+    if (runtime.tool[0] != '\0') {
+        display.print("TOOL ");
+        printClipped(runtime.tool, 15);
+    } else {
+        printClipped(claudeActivityHint(runtime.claudeState), 21);
+    }
+    display.setCursor(0, 45);
+    printClipped(runtime.text[0] != '\0' ? runtime.text : "Waiting for task", 21);
+
+    display.setCursor(0, 55);
+    if (runtime.activeSessions > 0) {
+        const uint32_t age = runtime.activityAgeSeconds +
+            (runtime.activityAgeReceivedAt == 0 ? 0 : (millis() - runtime.activityAgeReceivedAt) / 1000);
+        display.printf("S:%u  LAST %02lu:%02lu", runtime.activeSessions, age / 60, age % 60);
+    } else {
+        display.print("HOOK READY");
+    }
+    commitOledFrame();
+}
+
+void renderSystemRuntimePage(const OledRuntimeSnapshot &runtime) {
+    display.clearDisplay();
+    drawRuntimeHeader("SYSTEM MONITOR");
+    const bool fresh = runtime.computerOnline && millis() - runtime.receivedAt < 5000;
+    drawMetricRow("CPU", fresh ? runtime.cpu : 0xFF, 15);
+    drawMetricRow("GPU", fresh ? runtime.gpu : 0xFF, 28);
+    drawMetricRow("RAM", fresh ? runtime.memory : 0xFF, 41);
+    display.setCursor(0, 55);
+    if (fresh && runtime.temperature <= 100) display.printf("TEMP %uC", runtime.temperature);
+    else display.print(fresh ? "TEMP --" : "PC OFFLINE");
+    display.setCursor(98, 55);
+    display.printf("%02u:%02u", runtime.hour, runtime.minute);
+    commitOledFrame();
+}
+
+void renderClockRuntimePage(const OledRuntimeSnapshot &runtime) {
+    display.clearDisplay();
+    drawRuntimeHeader("CLOCK");
+    if (runtime.receivedAt == 0) {
+        display.setCursor(35, 23);
+        display.print("SYNC TIME");
+        display.setCursor(17, 39);
+        display.print("CONNECT VICO APP");
+        commitOledFrame();
+        return;
+    }
+    display.setTextSize(3);
+    display.setCursor(18, 17);
+    display.printf("%02u:%02u", runtime.hour, runtime.minute);
+    display.setTextSize(1);
+    static const char *const WEEKDAYS[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+    display.setCursor(29, 50);
+    display.printf("%02u-%02u  %s", runtime.month, runtime.day, WEEKDAYS[runtime.weekday]);
+    commitOledFrame();
+}
+
+void renderDeviceRuntimePage() {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+
+    // 顶栏：标题和当前连接模式。
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.print("Vico ESP32-S3");
+    display.setCursor(84, 0);
+    display.printf("P%u", keyProfiles.activeProfile() + 1);
+    display.setCursor(104, 0);
+    display.print(keyboard_mode == KeyboardMode::USB ? "USB" :
+        (bleKeyboard.isConnected() ? "BLE" : "..."));
+    display.drawLine(0, 12, 127, 12, SSD1306_WHITE);
+    for (uint8_t index = 0; index < NUM_KEYS; ++index) drawKeyBox(index, key_state[index]);
+    display.setCursor(0, 54);
+    display.print("FN+K6/K7 PAGE");
+    commitOledFrame();
+}
+
+void renderCustomRuntimePage() {
+    display.clearDisplay();
+    display.drawBitmap(0, 0, oledRuntime.customBitmap(), 128, 64, SSD1306_WHITE);
+    commitOledFrame();
+}
+
+void renderRuntimePage() {
+    const OledRuntimeSnapshot runtime = oledRuntime.snapshot();
+    switch (oledRuntime.effectivePage(millis())) {
+        case OledPage::BRAND: renderBrandRuntimePage(); break;
+        case OledPage::CLAUDE: renderClaudeRuntimePage(runtime); break;
+        case OledPage::SYSTEM: renderSystemRuntimePage(runtime); break;
+        case OledPage::CLOCK: renderClockRuntimePage(runtime); break;
+        case OledPage::DEVICE: renderDeviceRuntimePage(); break;
+        case OledPage::CUSTOM: renderCustomRuntimePage(); break;
+    }
+}
+
+// =============================================================================
+// OLED 顶层页面调度
+// =============================================================================
+// 设置菜单、USB 插线提示和预设切换提示拥有更高显示优先级；其余时间交给
+// OledRuntime::effectivePage() 决定品牌、Coding、性能等运行时页面。
+
 void renderKeyStatus() {
     if (settingsMenu.active) {
         renderSettingsMenu();
@@ -804,42 +1130,14 @@ void renderKeyStatus() {
         return;
     }
 
-    display.clearDisplay();
-    display.setTextColor(SSD1306_WHITE);
-
-    // 顶栏：标题和当前连接模式。
-    display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.print("Vico ESP32-S3");
-
-    display.setCursor(84, 0);
-    display.printf("P%u", keyProfiles.activeProfile() + 1);
-
-    display.setCursor(104, 0);
-    if (keyboard_mode == KeyboardMode::USB) {
-        display.print("USB");
-    } else {
-        display.print(bleKeyboard.isConnected() ? "BLE" : "...");
-    }
-
-    // 分隔线。
-    display.drawLine(0, 12, 127, 12, SSD1306_WHITE);
-
-    // 绘制全部八个按键状态。
-    for (uint8_t i = 0; i < NUM_KEYS; i++) {
-        drawKeyBox(i, key_state[i]);
-    }
-
-    // 底栏：GPIO 映射参考。
-    display.setTextColor(SSD1306_WHITE);
-    display.setTextSize(1);
-    display.setCursor(0, 54);
-    display.print("18 17 16 15 5 6 7 4");
-
-    commitOledFrame();
+    renderRuntimePage();
 }
 
-// ===== 初始化 =====
+// =============================================================================
+// Arduino 初始化入口
+// =============================================================================
+
+/** @brief 初始化串口、设置、OLED、按键、灯带以及开机选择的 HID 模式。 */
 void setup() {
     Serial.begin(115200);
     pinMode(MODE_SELECT_PIN, INPUT_PULLDOWN);
@@ -864,6 +1162,10 @@ void setup() {
     Serial.println("SSD1306 init OK");
 
     deviceSettings.begin();
+    oledRuntime.configure(
+        static_cast<OledPage>(deviceSettings.data().oledPage),
+        deviceSettings.data().oledAutoClaude
+    );
     applyOledSettings();
     last_user_activity_at = millis();
 
@@ -886,7 +1188,13 @@ void setup() {
     display_dirty = false;
 }
 
-// ===== 主循环 =====
+// =============================================================================
+// Arduino 主循环
+// =============================================================================
+// 执行顺序经过刻意安排：先推进灯效和连接状态，再扫描/发送按键，之后才绘制
+// OLED 和发送数字孪生分片，使显示与后台通信不会抢在键盘输入之前。
+
+/** @brief 非阻塞调度连接、按键、设置、OLED、RGB 和数字孪生任务。 */
 void loop() {
     updateModeSwitch();
     unsigned long now = millis();
@@ -953,6 +1261,29 @@ void loop() {
     }
 
     updateOledSleep(now);
+
+    if (oledRuntime.takeDirty()) display_dirty = true;
+    OledPage changedPage = OledPage::BRAND;
+    bool changedAutoClaude = true;
+    if (oledRuntime.takeSettingsChange(changedPage, changedAutoClaude)) {
+        auto &settings = deviceSettings.edit();
+        settings.oledPage = static_cast<uint8_t>(changedPage);
+        settings.oledAutoClaude = changedAutoClaude;
+        deviceSettings.save();
+        oledTwin.notifyRuntimeSettingsChanged(changedPage, changedAutoClaude);
+        display_dirty = true;
+    }
+
+    // Coding 页面思考动画约 5.5 FPS；其他状态每秒刷新一次 LAST 时间。
+    static uint32_t lastClaudeAnimationAt = 0;
+    const OledRuntimeSnapshot animationRuntime = oledRuntime.snapshot();
+    if (!settingsMenu.active && oledRuntime.effectivePage(now) == OledPage::CLAUDE) {
+        const uint32_t refreshInterval = animationRuntime.claudeState == ClaudeState::WORKING ? 180 : 1000;
+        if (now - lastClaudeAnimationAt >= refreshInterval) {
+            lastClaudeAnimationAt = now;
+            display_dirty = true;
+        }
+    }
 
     // 蓝牙未连接时定期刷新界面。
     if (keyboard_mode == KeyboardMode::BLE && !bleKeyboard.isConnected() &&

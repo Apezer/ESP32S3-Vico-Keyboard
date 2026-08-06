@@ -119,9 +119,9 @@ void BleKeyboard::begin(void)
   NimBLEDevice::setSecurityAuth(true, true, true);
 
   hid->setReportMap((uint8_t*)_hidReportDescriptor, sizeof(_hidReportDescriptor));
-  hid->startServices();
-
+  // 在服务器启动全部服务前，让派生类注册项目自定义服务。
   onStarted(pServer);
+  hid->startServices();
 
   advertising = pServer->getAdvertising();
   advertising->setAppearance(HID_KEYBOARD);

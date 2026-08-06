@@ -1,26 +1,39 @@
+/**
+ * @file oled_twin.cpp
+ * @brief 实现 USB Vendor HID 命令处理和 SSD1306 帧分片发送状态机。
+ */
+
 #include "oled_twin.h"
 
 #include <cstring>
 #include "tusb.h"
 
 namespace {
+// =============================================================================
+// 协议与固件能力常量
+// =============================================================================
 constexpr uint8_t PROTOCOL_VERSION = 2;
 constexpr uint8_t DISPLAY_WIDTH = 128;
 constexpr uint8_t DISPLAY_HEIGHT = 64;
 constexpr uint8_t SSD1306_PAGE_LAYOUT = 1;
 constexpr uint8_t FIRMWARE_VERSION_MAJOR = 0;
-constexpr uint8_t FIRMWARE_VERSION_MINOR = 5;
+constexpr uint8_t FIRMWARE_VERSION_MINOR = 6;
 constexpr uint8_t FIRMWARE_VERSION_PATCH = 0;
 }
 
-void OledTwinTransport::begin(KeyProfileManager *profiles) {
+// =============================================================================
+// 生命周期、事件合并与帧捕获
+// =============================================================================
+
+void OledTwinTransport::begin(KeyProfileManager *profiles, OledRuntime *runtime) {
     if (started_) return;
 
     profiles_ = profiles;
+    runtime_ = runtime;
 
-    // 四个输入包足以处理命令；更大的队列还能容纳主机短时突发数据，
-    // 同时不会阻塞按键扫描循环。
-    vendor_.setRxBufferSize(512);
+    // 一张自定义像素画会连续发送 42 份报告。接收队列必须能完整容纳
+    // 一次突发传输，否则 TinyUSB 来不及逐包处理时会丢失中间分片。
+    vendor_.setRxBufferSize(4096);
     vendor_.begin();
     started_ = true;
 }
@@ -37,10 +50,17 @@ void OledTwinTransport::notifyActiveProfileChanged() {
     if (profiles_ != nullptr) profileEventPending_ = true;
 }
 
+void OledTwinTransport::notifyRuntimeSettingsChanged(OledPage page, bool autoClaude) {
+    runtimePage_ = static_cast<uint8_t>(page);
+    runtimeAutoClaude_ = autoClaude;
+    runtimeSettingsEventPending_ = true;
+}
+
 void OledTwinTransport::resetSession() {
     subscribed_ = false;
     controlPacketPending_ = false;
     profileEventPending_ = false;
+    runtimeSettingsEventPending_ = false;
     txState_ = TxState::IDLE;
     txOffset_ = 0;
 
@@ -76,10 +96,21 @@ void OledTwinTransport::update(bool usbMounted) {
         return;
     }
 
+    if (runtimeSettingsEventPending_) {
+        if (sendRuntimeSettingsChanged()) runtimeSettingsEventPending_ = false;
+        return;
+    }
+
     if (!subscribed_) return;
     if (txState_ == TxState::IDLE && latestFramePending_) startLatestFrame();
     if (txState_ != TxState::IDLE) sendFramePacket();
 }
+
+// =============================================================================
+// 主机命令解析与配置事务
+// =============================================================================
+// 每次只处理一份完整的 63 字节报告。预设更新命令调用 KeyProfileManager 的
+// 原子事务接口，运行时包则交给 OledRuntime 统一解析。
 
 void OledTwinTransport::processHostCommand() {
     if (vendor_.available() < REPORT_BYTES) return;
@@ -159,11 +190,19 @@ void OledTwinTransport::processHostCommand() {
             break;
         }
 
+        case Command::RUNTIME_UPDATE:
+            if (runtime_ != nullptr) runtime_->applyPacket(packet + 2, payloadLength);
+            break;
+
         default:
             // 自定义 OLED 上传命令单独进行版本管理。
             break;
     }
 }
+
+// =============================================================================
+// 控制响应和主动事件组包
+// =============================================================================
 
 void OledTwinTransport::queueHelloAck() {
     uint8_t payload[13 + VICO_PROFILE_COUNT * 4] = {
@@ -214,6 +253,12 @@ void OledTwinTransport::queueCommandAck(
     controlPacketPending_ = true;
 }
 
+// =============================================================================
+// OLED 帧发送状态机
+// =============================================================================
+// 一帧依次发送 FRAME_BEGIN、若干 FRAME_CHUNK 和 FRAME_END。发送期间如果产生
+// 新画面，只覆盖 latestFrame_，不会破坏正在传输的 txFrame_。
+
 void OledTwinTransport::startLatestFrame() {
     std::memcpy(txFrame_, latestFrame_, FRAME_BYTES);
     latestFramePending_ = false;
@@ -236,6 +281,11 @@ bool OledTwinTransport::sendProfileChanged() {
         static_cast<uint8_t>(profiles_ != nullptr ? profiles_->activeProfile() : 0),
     };
     return sendPacket(Command::PROFILE_ACTIVE_CHANGED, payload, sizeof(payload));
+}
+
+bool OledTwinTransport::sendRuntimeSettingsChanged() {
+    const uint8_t payload[] = { runtimePage_, runtimeAutoClaude_ ? uint8_t{1} : uint8_t{0} };
+    return sendPacket(Command::RUNTIME_SETTINGS_CHANGED, payload, sizeof(payload));
 }
 
 bool OledTwinTransport::sendFramePacket() {
@@ -307,6 +357,10 @@ bool OledTwinTransport::sendPacket(
     lastReportAt_ = millis();
     return true;
 }
+
+// =============================================================================
+// 包校验与小端序编码工具
+// =============================================================================
 
 bool OledTwinTransport::validatePacket(const uint8_t *packet, size_t length) {
     if (packet == nullptr || length != REPORT_BYTES) return false;
