@@ -21,6 +21,9 @@ struct __attribute__((packed)) DeviceSettingsData {
     uint8_t rgbBrightness;
     uint8_t rgbSpeed;
     bool rgbEnabled;
+    uint8_t rgbRed;
+    uint8_t rgbGreen;
+    uint8_t rgbBlue;
 };
 
 /** 独立于五套按键预设的持久化设备设置。 */

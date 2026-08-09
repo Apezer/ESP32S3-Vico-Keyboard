@@ -17,7 +17,7 @@ constexpr uint8_t DISPLAY_WIDTH = 128;
 constexpr uint8_t DISPLAY_HEIGHT = 64;
 constexpr uint8_t SSD1306_PAGE_LAYOUT = 1;
 constexpr uint8_t FIRMWARE_VERSION_MAJOR = 0;
-constexpr uint8_t FIRMWARE_VERSION_MINOR = 6;
+constexpr uint8_t FIRMWARE_VERSION_MINOR = 7;
 constexpr uint8_t FIRMWARE_VERSION_PATCH = 0;
 }
 
@@ -56,11 +56,19 @@ void OledTwinTransport::notifyRuntimeSettingsChanged(OledPage page, bool autoCla
     runtimeSettingsEventPending_ = true;
 }
 
+void OledTwinTransport::notifyBatteryChanged(uint8_t percent, uint16_t millivolts) {
+    batteryPercent_ = percent > 100 ? 100 : percent;
+    batteryMillivolts_ = millivolts;
+    // begin()前调用只设置握手初值；端点启动后才需要排队主动事件。
+    if (started_) batteryEventPending_ = true;
+}
+
 void OledTwinTransport::resetSession() {
     subscribed_ = false;
     controlPacketPending_ = false;
     profileEventPending_ = false;
     runtimeSettingsEventPending_ = false;
+    batteryEventPending_ = false;
     txState_ = TxState::IDLE;
     txOffset_ = 0;
 
@@ -98,6 +106,11 @@ void OledTwinTransport::update(bool usbMounted) {
 
     if (runtimeSettingsEventPending_) {
         if (sendRuntimeSettingsChanged()) runtimeSettingsEventPending_ = false;
+        return;
+    }
+
+    if (batteryEventPending_) {
+        if (sendBatteryChanged()) batteryEventPending_ = false;
         return;
     }
 
@@ -205,7 +218,9 @@ void OledTwinTransport::processHostCommand() {
 // =============================================================================
 
 void OledTwinTransport::queueHelloAck() {
-    uint8_t payload[13 + VICO_PROFILE_COUNT * 4] = {
+    constexpr uint8_t profileCrcOffset = 13;
+    constexpr uint8_t batteryOffset = profileCrcOffset + VICO_PROFILE_COUNT * 4;
+    uint8_t payload[batteryOffset + 3] = {
         PROTOCOL_VERSION,
         DISPLAY_WIDTH,
         DISPLAY_HEIGHT,
@@ -222,8 +237,10 @@ void OledTwinTransport::queueHelloAck() {
         const uint32_t crc = profiles_ != nullptr
             ? profiles_->storedProfileCrc(profile)
             : 0;
-        writeUint32(payload + 13 + profile * 4, crc);
+        writeUint32(payload + profileCrcOffset + profile * 4, crc);
     }
+    payload[batteryOffset] = batteryPercent_;
+    writeUint16(payload + batteryOffset + 1, batteryMillivolts_);
 
     std::memset(controlPacket_, 0, REPORT_BYTES);
     controlPacket_[0] = static_cast<uint8_t>(Command::HELLO_ACK);
@@ -286,6 +303,15 @@ bool OledTwinTransport::sendProfileChanged() {
 bool OledTwinTransport::sendRuntimeSettingsChanged() {
     const uint8_t payload[] = { runtimePage_, runtimeAutoClaude_ ? uint8_t{1} : uint8_t{0} };
     return sendPacket(Command::RUNTIME_SETTINGS_CHANGED, payload, sizeof(payload));
+}
+
+bool OledTwinTransport::sendBatteryChanged() {
+    const uint8_t payload[] = {
+        batteryPercent_,
+        static_cast<uint8_t>(batteryMillivolts_ & 0xFF),
+        static_cast<uint8_t>(batteryMillivolts_ >> 8),
+    };
+    return sendPacket(Command::BATTERY_STATUS_CHANGED, payload, sizeof(payload));
 }
 
 bool OledTwinTransport::sendFramePacket() {

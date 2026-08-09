@@ -70,6 +70,17 @@ struct OledRuntimeSnapshot {
     uint32_t claudeStateChangedAt = 0;
 };
 
+/** @brief 由桌面软件下发的 RGB 灯带设置。 */
+struct RgbRuntimeSettings {
+    uint8_t effect = 0;
+    uint8_t brightness = 50;
+    uint8_t speed = 100;
+    bool enabled = true;
+    uint8_t red = 214;
+    uint8_t green = 255;
+    uint8_t blue = 56;
+};
+
 /**
  * @brief 管理 OLED 运行时数据，并提供 USB 与 BLE 共用的数据包解析。
  *
@@ -110,6 +121,8 @@ public:
     bool takeDirty();
     /** @brief 消费一次本地页面设置变化。 */
     bool takeSettingsChange(OledPage &page, bool &autoClaude);
+    /** @brief 消费一次桌面软件下发的 RGB 设置。 */
+    bool takeRgbSettingsChange(RgbRuntimeSettings &settings);
 
     /**
      * @brief 在蓝牙 HID 服务启动期间注册自定义状态服务。
@@ -132,12 +145,15 @@ private:
     static constexpr uint8_t PACKET_BITMAP_CHUNK = 4;
     static constexpr uint8_t PACKET_BITMAP_COMMIT = 5;
     static constexpr uint8_t PACKET_CLAUDE_TEXT = 6;
+    static constexpr uint8_t PACKET_RGB_SETTINGS = 7;
     static constexpr size_t BITMAP_BYTES = 128 * 64 / 8;
 
     // 当前正式运行状态和主循环使用的单次变化标记。
     OledRuntimeSnapshot state_ = {};
     bool dirty_ = true;
     bool settingsChanged_ = false;
+    RgbRuntimeSettings rgbSettings_ = {};
+    bool rgbSettingsChanged_ = false;
     // BLE characteristic 仅在 BLE 协议栈存活期间有效。
     NimBLECharacteristic *rx_ = nullptr;
     NimBLECharacteristic *tx_ = nullptr;

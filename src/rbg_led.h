@@ -22,6 +22,8 @@ enum RbgLedEffect : uint8_t {
     RBG_EFFECT_COLOR_WIPE,
     RBG_EFFECT_FIRE,
     RBG_EFFECT_SOLID_FADE,
+    RBG_EFFECT_SOLID_COLOR,
+    RBG_EFFECT_RAINBOW_BREATHING,
     RBG_EFFECT_COUNT,
 };
 
@@ -41,6 +43,8 @@ uint8_t rbgLedGetBrightness();
 /** @brief 设置动画速度百分比。 */
 void rbgLedSetSpeed(uint8_t percent);
 uint8_t rbgLedGetSpeed();
+/** @brief 设置常亮模式使用的 RGB 颜色。 */
+void rbgLedSetColor(uint8_t red, uint8_t green, uint8_t blue);
 /** @brief 总开关；关闭后立即清空灯珠。 */
 void rbgLedSetEnabled(bool enabled);
 bool rbgLedIsEnabled();

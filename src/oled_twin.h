@@ -48,6 +48,8 @@ public:
     void notifyActiveProfileChanged();
     /** @brief 键盘本地切换 OLED 页面后，将主动状态事件加入队列。 */
     void notifyRuntimeSettingsChanged(OledPage page, bool autoClaude);
+    /** @brief 更新握手信息，并在USB端点启动后向软件推送最新电池状态。 */
+    void notifyBatteryChanged(uint8_t percent, uint16_t millivolts);
 
 private:
     // Vendor HID 报告固定为 63 字节：命令、长度、最多 60 字节负载、校验。
@@ -72,6 +74,7 @@ private:
         COMMAND_ACK = 0x90,
         PROFILE_ACTIVE_CHANGED = 0x91,
         RUNTIME_SETTINGS_CHANGED = 0x92,
+        BATTERY_STATUS_CHANGED = 0x93,
     };
 
     /** @brief 一帧 1024 字节 OLED 数据的分片发送状态。 */
@@ -93,8 +96,11 @@ private:
     bool controlPacketPending_ = false;
     bool profileEventPending_ = false;
     bool runtimeSettingsEventPending_ = false;
+    bool batteryEventPending_ = false;
     uint8_t runtimePage_ = 0;
     bool runtimeAutoClaude_ = true;
+    uint8_t batteryPercent_ = 0;
+    uint16_t batteryMillivolts_ = 0;
     bool profileChanged_ = false;
     // 当前 OLED 帧的分片发送状态。
     TxState txState_ = TxState::IDLE;
@@ -115,6 +121,7 @@ private:
     bool sendControlPacket();
     bool sendProfileChanged();
     bool sendRuntimeSettingsChanged();
+    bool sendBatteryChanged();
     bool sendFramePacket();
     bool sendPacket(Command command, const uint8_t *payload, uint8_t payloadLength);
 

@@ -148,6 +148,22 @@ bool OledRuntime::applyPacket(const uint8_t *data, size_t length) {
         return true;
     }
 
+    // RGB_SETTINGS：USB 与 BLE 共用灯效、亮度、速度、总开关和常亮颜色设置。
+    if (data[2] == PACKET_RGB_SETTINGS) {
+        constexpr uint8_t RGB_EFFECT_COUNT = 8;
+        const uint8_t effect = data[3];
+        const uint8_t brightness = data[4];
+        const uint8_t speed = data[5];
+        const bool enabled = data[6] != 0;
+        if (effect >= RGB_EFFECT_COUNT || brightness < 25 || brightness > 100 ||
+            speed < 50 || speed > 200 || data[6] > 1) {
+            return false;
+        }
+        rgbSettings_ = { effect, brightness, speed, enabled, data[7], data[8], data[9] };
+        rgbSettingsChanged_ = true;
+        return true;
+    }
+
     // BITMAP_BEGIN：声明接下来固定为 1024 字节位图，并记录整帧 CRC32。
     if (data[2] == PACKET_BITMAP_BEGIN) {
         const uint16_t length = static_cast<uint16_t>(data[3] | (data[4] << 8));
@@ -272,6 +288,13 @@ bool OledRuntime::takeSettingsChange(OledPage &page, bool &autoClaude) {
     settingsChanged_ = false;
     page = state_.configuredPage;
     autoClaude = state_.autoClaude;
+    return true;
+}
+
+bool OledRuntime::takeRgbSettingsChange(RgbRuntimeSettings &settings) {
+    if (!rgbSettingsChanged_) return false;
+    rgbSettingsChanged_ = false;
+    settings = rgbSettings_;
     return true;
 }
 

@@ -23,7 +23,7 @@
  *   K8 -> GPIO 4   （Fn，内部层切换键）
  *
  *   WS2812B DIN -> GPIO 8
- *   模式开关公共端 -> GPIO 35
+ *   模式开关公共端 -> GPIO 38
  *     LOW/GND  = 蓝牙模式
  *     HIGH/3V3 = USB 模式
  *
@@ -45,6 +45,7 @@
 #include "USBHIDConsumerControl.h"
 #include "USBHIDKeyboard.h"
 #include "tusb.h"
+#include "battery_monitor.h"
 #include "font.h"
 #include "device_settings.h"
 #include "key_profiles.h"
@@ -67,7 +68,7 @@
 
 #define I2C_SDA         10
 #define I2C_SCL         9
-#define MODE_SELECT_PIN 35
+#define MODE_SELECT_PIN 38
 
 #define NUM_KEYS        8
 #define DEBOUNCE_MS     10
@@ -76,7 +77,7 @@
 
 const uint8_t KEY_PINS[VICO_KEY_COUNT] = {18, 17, 16, 15, 5, 6, 7, 4};
 
-/** @brief 当前实际启用的 HID 传输模式，由 GPIO35 拨片开关热切换。 */
+/** @brief 当前实际启用的 HID 传输模式，由 GPIO38 拨片开关热切换。 */
 enum class KeyboardMode : uint8_t {
     BLE,
     USB,
@@ -132,6 +133,7 @@ static SettingsMenuState settingsMenu;
 // =============================================================================
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 OledRuntime oledRuntime;
+BatteryMonitor batteryMonitor;
 
 /** @brief 在标准 BLE HID 服务启动阶段追加 Vico OLED 状态 GATT 服务。 */
 class VicoBleKeyboard : public BleKeyboard {
@@ -224,6 +226,8 @@ void startKeyboardInterface(KeyboardMode mode) {
             tud_connect();
         }
     } else {
+        // setBatteryLevel()在BLE服务创建前只更新缓存初值，服务启动时会自动发布。
+        bleKeyboard.setBatteryLevel(batteryMonitor.valid() ? batteryMonitor.percent() : 0);
         bleKeyboard.begin();
     }
 }
@@ -525,6 +529,9 @@ void renderUsbConnectionPrompt() {
 
     display.setCursor(40, 0);
     display.print("USB MODE");
+    display.setCursor(104, 0);
+    if (batteryMonitor.valid()) display.printf("%3u%%", batteryMonitor.percent());
+    else display.print(" --%");
     display.drawLine(0, 11, 127, 11, SSD1306_WHITE);
 
     // 使用四帧动画让 USB 插头逐渐靠近主机端口。
@@ -566,6 +573,7 @@ void applyRgbSettings() {
     rbgLedSetEffect(settings.rgbEffect);
     rbgLedSetBrightness(settings.rgbBrightness);
     rbgLedSetSpeed(settings.rgbSpeed);
+    rbgLedSetColor(settings.rgbRed, settings.rgbGreen, settings.rgbBlue);
     rbgLedSetEnabled(settings.rgbEnabled);
 }
 
@@ -576,7 +584,7 @@ uint8_t settingsItemCount(SettingsScreen screen) {
         case SettingsScreen::OLED: return 6;
         case SettingsScreen::RGB: return 5;
         case SettingsScreen::CONNECTION: return 4;
-        case SettingsScreen::DEVICE_INFO: return 8;
+        case SettingsScreen::DEVICE_INFO: return 10;
         case SettingsScreen::FACTORY_RESET: return 2;
         case SettingsScreen::KEY_TEST: return 0;
     }
@@ -651,17 +659,22 @@ void settingsItemLabel(
             if (index == 0) snprintf(destination, destinationSize, "MODE %s", keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
             if (index == 1) snprintf(destination, destinationSize, "USB %s", usb_mounted ? "CONNECTED" : "NOT CONNECTED");
             if (index == 2) snprintf(destination, destinationSize, "BLE %s", bleKeyboard.isConnected() ? "CONNECTED" : "NOT CONNECTED");
-            if (index == 3) snprintf(destination, destinationSize, "GPIO35 %s", mode_switch_raw_usb ? "HIGH" : "LOW");
+            if (index == 3) snprintf(destination, destinationSize, "GPIO38 %s", mode_switch_raw_usb ? "HIGH" : "LOW");
             break;
         case SettingsScreen::DEVICE_INFO:
-            if (index == 0) snprintf(destination, destinationSize, "FW 0.6.0");
+            if (index == 0) snprintf(destination, destinationSize, "FW 0.7.0");
             if (index == 1) snprintf(destination, destinationSize, "PROTOCOL 2");
             if (index == 2) snprintf(destination, destinationSize, "PROFILE P%u", keyProfiles.activeProfile() + 1);
             if (index == 3) snprintf(destination, destinationSize, "MODE %s", keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
             if (index == 4) snprintf(destination, destinationSize, "LINK %s", (usb_mounted || bleKeyboard.isConnected()) ? "CONNECTED" : "OFFLINE");
             if (index == 5) snprintf(destination, destinationSize, "USB 3343:83CF");
             if (index == 6) snprintf(destination, destinationSize, "BLE VICO KEYBOARD");
-            if (index == 7) snprintf(destination, destinationSize, "NVS OK");
+            if (index == 7) snprintf(destination, destinationSize, "BATTERY %s", batteryMonitor.valid() ? "OK" : "NOT FOUND");
+            if (index == 8) {
+                if (batteryMonitor.valid()) snprintf(destination, destinationSize, "BAT %u%% %uMV", batteryMonitor.percent(), batteryMonitor.millivolts());
+                else snprintf(destination, destinationSize, "BAT --%% ----MV");
+            }
+            if (index == 9) snprintf(destination, destinationSize, "NVS OK");
             break;
         case SettingsScreen::FACTORY_RESET:
             snprintf(destination, destinationSize, "%s", index == 0 ? "NO - CANCEL" : "YES - RESET ALL");
@@ -899,6 +912,13 @@ void printClipped(const char *text, uint8_t maximumCharacters) {
     }
 }
 
+/** @brief 在指定位置绘制固定四字符宽度的真实电池百分比。 */
+void drawBatteryPercent(uint8_t x, uint8_t y) {
+    display.setCursor(x, y);
+    if (batteryMonitor.valid()) display.printf("%3u%%", batteryMonitor.percent());
+    else display.print(" --%");
+}
+
 void drawClaudeOrbitPixel(uint8_t position) {
     constexpr uint8_t x = 94;
     constexpr uint8_t y = 11;
@@ -931,8 +951,7 @@ void drawRuntimeHeader(const char *title) {
     display.setTextSize(1);
     display.setCursor(0, 0);
     display.print(title);
-    display.setCursor(104, 0);
-    display.printf("P%u", keyProfiles.activeProfile() + 1);
+    drawBatteryPercent(104, 0);
     display.drawLine(0, 10, 127, 10, SSD1306_WHITE);
 }
 
@@ -958,8 +977,7 @@ void renderBrandRuntimePage() {
     display.setTextSize(1);
     display.setCursor(1, 1);
     display.print(keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
-    display.setCursor(108, 1);
-    display.print("86%");
+    drawBatteryPercent(104, 1);
     display.drawLine(0, 10, 127, 10, SSD1306_WHITE);
 
     display.setTextSize(2);
@@ -990,9 +1008,10 @@ void renderClaudeRuntimePage(const OledRuntimeSnapshot &runtime) {
     // Coding 页只保留与 Claude 工作流直接相关的信息。
     display.setCursor(0, 0);
     display.print("CLAUDE CODE");
-    display.setCursor(108, 0);
+    display.setCursor(82, 0);
     if (keyboard_mode == KeyboardMode::USB) display.print(usb_mounted ? "USB" : "---");
     else display.print(bleKeyboard.isConnected() ? "BLE" : "ADV");
+    drawBatteryPercent(104, 0);
     display.drawLine(0, 9, 127, 9, SSD1306_WHITE);
 
     // 大状态文字和 Claude 图标形成第一视觉层级；思考时线段沿图标外圈流动。
@@ -1078,7 +1097,8 @@ void renderDeviceRuntimePage() {
     display.drawLine(0, 12, 127, 12, SSD1306_WHITE);
     for (uint8_t index = 0; index < NUM_KEYS; ++index) drawKeyBox(index, key_state[index]);
     display.setCursor(0, 54);
-    display.print("FN+K6/K7 PAGE");
+    if (batteryMonitor.valid()) display.printf("BAT %u%%  %uMV", batteryMonitor.percent(), batteryMonitor.millivolts());
+    else display.print("BATTERY NOT FOUND");
     commitOledFrame();
 }
 
@@ -1181,6 +1201,14 @@ void setup() {
     rbgLedInit();
     applyRgbSettings();
 
+    // GPIO14通过100K/100K分压读取单节锂电池；初值同时提供给BLE和USB协议。
+    batteryMonitor.begin();
+    bleKeyboard.setBatteryLevel(batteryMonitor.valid() ? batteryMonitor.percent() : 0);
+    oledTwin.notifyBatteryChanged(
+        batteryMonitor.valid() ? batteryMonitor.percent() : 0,
+        batteryMonitor.valid() ? batteryMonitor.millivolts() : 0
+    );
+
     startKeyboardInterface(keyboard_mode);
 
     // 跳过 Claude Code 开机画面，直接显示键盘状态。
@@ -1260,6 +1288,19 @@ void loop() {
         display_dirty = true;
     }
 
+    // 按键扫描和HID发送完成后再做低频ADC采样，避免电池测量增加输入路径延迟。
+    // 只有百分比、有效状态或至少10mV的显示值变化时，才刷新OLED和通知主机。
+    if (batteryMonitor.update(now)) {
+        display_dirty = true;
+        if (keyboard_mode == KeyboardMode::BLE) {
+            bleKeyboard.setBatteryLevel(batteryMonitor.valid() ? batteryMonitor.percent() : 0);
+        }
+        oledTwin.notifyBatteryChanged(
+            batteryMonitor.valid() ? batteryMonitor.percent() : 0,
+            batteryMonitor.valid() ? batteryMonitor.millivolts() : 0
+        );
+    }
+
     updateOledSleep(now);
 
     if (oledRuntime.takeDirty()) display_dirty = true;
@@ -1272,6 +1313,29 @@ void loop() {
         deviceSettings.save();
         oledTwin.notifyRuntimeSettingsChanged(changedPage, changedAutoClaude);
         display_dirty = true;
+    }
+
+    // USB Vendor HID 与蓝牙 GATT 共用同一份 RGB 设置包。
+    // 灯效立即应用；停止调整 750ms 后再合并写入 NVS，避免频繁擦写 Flash。
+    static bool rgbSettingsSavePending = false;
+    static uint32_t rgbSettingsChangedAt = 0;
+    RgbRuntimeSettings changedRgb = {};
+    if (oledRuntime.takeRgbSettingsChange(changedRgb)) {
+        auto &settings = deviceSettings.edit();
+        settings.rgbEffect = changedRgb.effect;
+        settings.rgbBrightness = changedRgb.brightness;
+        settings.rgbSpeed = changedRgb.speed;
+        settings.rgbEnabled = changedRgb.enabled;
+        settings.rgbRed = changedRgb.red;
+        settings.rgbGreen = changedRgb.green;
+        settings.rgbBlue = changedRgb.blue;
+        applyRgbSettings();
+        rgbSettingsSavePending = true;
+        rgbSettingsChangedAt = now;
+    }
+    if (rgbSettingsSavePending && now - rgbSettingsChangedAt >= 750) {
+        deviceSettings.save();
+        rgbSettingsSavePending = false;
     }
 
     // Coding 页面思考动画约 5.5 FPS；其他状态每秒刷新一次 LAST 时间。

@@ -1,6 +1,6 @@
 /**
  * @file rbg_led.cpp
- * @brief 实现六种非阻塞 WS2812B 灯效及亮度、速度参数。
+ * @brief 实现八种非阻塞 WS2812B 灯效及颜色、亮度和速度参数。
  */
 
 #include "rbg_led.h"
@@ -17,6 +17,8 @@ static uint8_t current_effect = RBG_EFFECT_RAINBOW;
 static uint8_t brightness_percent = 50;
 static uint8_t speed_percent = 100;
 static bool leds_enabled = true;
+static CRGB solid_color(214, 255, 56);
+static bool solid_color_dirty = true;
 
 static const char *const EFFECT_NAMES[] = {
     "Rainbow",
@@ -25,6 +27,8 @@ static const char *const EFFECT_NAMES[] = {
     "Wipe",
     "Fire",
     "Solid",
+    "Static",
+    "Rainbow Breath",
 };
 
 // =============================================================================
@@ -55,6 +59,7 @@ static void showLeds() {
 static void clearLeds() {
     FastLED_min<RBG_LED_PIN>.clear();
     showLeds();
+    solid_color_dirty = true;
 }
 
 static bool elapsed(unsigned long &last_ms, unsigned long interval_ms) {
@@ -72,6 +77,22 @@ static unsigned long scaledInterval(unsigned long base_ms) {
 
 static uint8_t peakBrightness() {
     return static_cast<uint8_t>(brightness_percent * 255UL / 100UL);
+}
+
+struct BreathAnimation {
+    uint8_t level = 0;
+    int8_t direction = 1;
+    unsigned long last_ms = 0;
+};
+
+/** 按当前呼吸亮度和全局亮度缩放一种 RGB 颜色。 */
+static CRGB breathingColor(const CRGB &color, uint8_t level) {
+    const uint8_t output_level = static_cast<uint8_t>(level * peakBrightness() / 255UL);
+    return CRGB(
+        static_cast<uint8_t>(color.r * output_level / 255UL),
+        static_cast<uint8_t>(color.g * output_level / 255UL),
+        static_cast<uint8_t>(color.b * output_level / 255UL)
+    );
 }
 
 // =============================================================================
@@ -94,28 +115,48 @@ static void effectRainbow() {
 }
 
 static void effectBreathing() {
-    static uint8_t value = 0;
-    static int8_t direction = 1;
-    static unsigned long last_ms = 0;
+    static BreathAnimation animation;
+    if (!elapsed(animation.last_ms, scaledInterval(18))) return;
 
-    if (!elapsed(last_ms, scaledInterval(18))) {
-        return;
+    const int16_t next = static_cast<int16_t>(animation.level) + animation.direction * 2;
+    if (next >= 255) {
+        animation.level = 255;
+        animation.direction = -1;
+    } else if (next <= 0) {
+        animation.level = 0;
+        animation.direction = 1;
+    } else {
+        animation.level = static_cast<uint8_t>(next);
     }
 
-    value = value + direction * 2;
-    const uint8_t peak = peakBrightness();
-    if (value >= peak) {
-        value = peak;
-        direction = -1;
-    } else if (value <= 2) {
-        value = 2;
-        direction = 1;
-    }
-
-    const CRGB color(value, 0, value / 2);
+    const CRGB color = breathingColor(solid_color, animation.level);
     for (uint8_t i = 0; i < RBG_LED_COUNT; i++) {
         leds[i] = color;
     }
+    showLeds();
+}
+
+/** 每完成一次完整呼吸后跳到下一种彩虹颜色。 */
+static void effectRainbowBreathing() {
+    static BreathAnimation animation;
+    static uint8_t hue = 0;
+    if (!elapsed(animation.last_ms, scaledInterval(18))) return;
+
+    const int16_t next = static_cast<int16_t>(animation.level) + animation.direction * 2;
+    if (next >= 255) {
+        animation.level = 255;
+        animation.direction = -1;
+    } else if (next <= 0) {
+        animation.level = 0;
+        animation.direction = 1;
+        hue += 43;
+    } else {
+        animation.level = static_cast<uint8_t>(next);
+    }
+
+    const uint8_t output_level = static_cast<uint8_t>(animation.level * peakBrightness() / 255UL);
+    const CRGB color = hsvToRgb(hue, 255, output_level);
+    for (uint8_t i = 0; i < RBG_LED_COUNT; i++) leds[i] = color;
     showLeds();
 }
 
@@ -193,6 +234,28 @@ static void effectSolidFade() {
     showLeds();
 }
 
+/** 保持全部按键为用户选择的同一种颜色，不执行动画。 */
+static void effectSolidColor() {
+    static CRGB last_color = CRGB::Black;
+    static uint8_t last_brightness = 0;
+    const uint8_t peak = peakBrightness();
+    if (!solid_color_dirty && last_color.r == solid_color.r && last_color.g == solid_color.g &&
+        last_color.b == solid_color.b && last_brightness == peak) {
+        return;
+    }
+
+    const CRGB output(
+        static_cast<uint8_t>(solid_color.r * peak / 255UL),
+        static_cast<uint8_t>(solid_color.g * peak / 255UL),
+        static_cast<uint8_t>(solid_color.b * peak / 255UL)
+    );
+    for (uint8_t i = 0; i < RBG_LED_COUNT; i++) leds[i] = output;
+    last_color = solid_color;
+    last_brightness = peak;
+    solid_color_dirty = false;
+    showLeds();
+}
+
 typedef void (*EffectFunc)();
 static const EffectFunc EFFECT_FUNCS[] = {
     effectRainbow,
@@ -201,6 +264,8 @@ static const EffectFunc EFFECT_FUNCS[] = {
     effectColorWipe,
     effectFire,
     effectSolidFade,
+    effectSolidColor,
+    effectRainbowBreathing,
 };
 
 // =============================================================================
@@ -225,10 +290,10 @@ void rbgLedNextEffect() {
 }
 
 void rbgLedSetEffect(uint8_t effect) {
-    if (effect < RBG_EFFECT_COUNT) {
-        current_effect = effect;
-        clearLeds();
-    }
+    if (effect >= RBG_EFFECT_COUNT || effect == current_effect) return;
+
+    current_effect = effect;
+    clearLeds();
 }
 
 uint8_t rbgLedGetEffect() {
@@ -243,7 +308,11 @@ const char *rbgLedGetEffectName() {
 }
 
 void rbgLedSetBrightness(uint8_t percent) {
-    brightness_percent = constrain(percent, 25, 100);
+    const uint8_t next_brightness = constrain(percent, 25, 100);
+    if (next_brightness == brightness_percent) return;
+
+    brightness_percent = next_brightness;
+    solid_color_dirty = true;
 }
 
 uint8_t rbgLedGetBrightness() {
@@ -258,9 +327,25 @@ uint8_t rbgLedGetSpeed() {
     return speed_percent;
 }
 
+void rbgLedSetColor(uint8_t red, uint8_t green, uint8_t blue) {
+    if (solid_color.r == red && solid_color.g == green && solid_color.b == blue) return;
+
+    solid_color = CRGB(red, green, blue);
+    // 颜色选择器会连续下发更新。这里只标记下一帧需要刷新，避免每个数据包
+    // 都先把灯带清成黑色，从而造成常亮模式切换颜色后看起来一直不亮。
+    solid_color_dirty = true;
+}
+
 void rbgLedSetEnabled(bool enabled) {
+    if (leds_enabled == enabled) return;
+
     leds_enabled = enabled;
-    clearLeds();
+    if (enabled) {
+        // 重新打开时由当前灯效绘制完整画面。
+        solid_color_dirty = true;
+    } else {
+        clearLeds();
+    }
 }
 
 bool rbgLedIsEnabled() {
