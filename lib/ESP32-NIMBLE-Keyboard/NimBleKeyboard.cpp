@@ -497,10 +497,16 @@ size_t BleKeyboard::write(const uint8_t *buffer, size_t size) {
 
 void BleKeyboard::onConnect(NimBLEServer* pServer, NimBLEConnInfo &connInfo) {
   this->connected = true;
+
+  // Windows 建立 HID 连接后继续广播自定义 GATT 服务，允许配套软件建立第二条连接。
+  if (pServer->getConnectedCount() < NIMBLE_MAX_CONNECTIONS) {
+    NimBLEDevice::startAdvertising();
+  }
 }
 
 void BleKeyboard::onDisconnect(NimBLEServer* pServer, NimBLEConnInfo &connInfo, int reason) {
-  this->connected = false;
+  // 仅在所有 BLE 客户端均断开后才将 HID 状态标记为离线。
+  this->connected = pServer->getConnectedCount() > 0;
 }
 
 void BleKeyboard::onWrite(NimBLECharacteristic* me, NimBLEConnInfo &connInfo) {
