@@ -91,6 +91,11 @@ class OledRuntime : public NimBLECharacteristicCallbacks {
 public:
     static constexpr size_t PACKET_BYTES = 32;
 
+    /** @brief 从 NVS 恢复最后一次由用户明确保存的自定义像素画。 */
+    void begin();
+    /** @brief 清除 NVS 和内存中的自定义像素画，用于恢复出厂设置。 */
+    bool clearCustomBitmap();
+
     /** @brief 从持久化设置初始化页面，不触发设置回传。 */
     void configure(OledPage page, bool autoClaude);
     /** @brief 修改页面并标记需要同步回软件和 NVS。 */
@@ -146,6 +151,7 @@ private:
     static constexpr uint8_t PACKET_BITMAP_COMMIT = 5;
     static constexpr uint8_t PACKET_CLAUDE_TEXT = 6;
     static constexpr uint8_t PACKET_RGB_SETTINGS = 7;
+    static constexpr uint8_t PACKET_BITMAP_SAVE = 8;
     static constexpr size_t BITMAP_BYTES = 128 * 64 / 8;
 
     // 当前正式运行状态和主循环使用的单次变化标记。
@@ -167,6 +173,8 @@ private:
     static bool validPacket(const uint8_t *data, size_t length);
     static uint8_t checksum(const uint8_t *data);
     static uint32_t calculateCrc32(const uint8_t *data, size_t length);
+    bool loadCustomBitmap();
+    bool saveCustomBitmap(uint32_t expectedCrc) const;
     void notifyPage();
     void notifyJsonAck();
 };

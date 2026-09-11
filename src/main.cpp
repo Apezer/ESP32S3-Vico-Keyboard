@@ -23,6 +23,7 @@
  *   K8 -> GPIO 4   （Fn，内部层切换键）
  *
  *   WS2812B DIN -> GPIO 8
+ *   EC11 A/B/SW -> GPIO 11/12/13，公共端和按压另一端接地
  *   模式开关公共端 -> GPIO 38
  *     LOW/GND  = 蓝牙模式
  *     HIGH/3V3 = USB 模式
@@ -52,6 +53,7 @@
 #include "oled_runtime.h"
 #include "oled_twin.h"
 #include "rbg_led.h"
+#include "rotary_encoder.h"
 
 #if !ARDUINO_USB_MODE
 #error "Native USB must be enabled with ARDUINO_USB_MODE=1."
@@ -105,6 +107,11 @@ static uint8_t usb_prompt_frame = 0;
 static unsigned long usb_prompt_frame_at = 0;
 static unsigned long last_user_activity_at = 0;
 static bool oled_sleeping = false;
+// 旋钮媒体键使用短按状态机，按下和释放分散到不同循环，不阻塞按键扫描。
+static ConsumerAction encoderMediaAction = ConsumerAction::NONE;
+static int8_t encoderVolumeSteps = 0;
+static uint8_t encoderClicks = 0;
+static uint32_t encoderMediaAt = 0;
 
 /** @brief 设备端设置菜单的页面状态。 */
 enum class SettingsScreen : uint8_t {
@@ -194,6 +201,10 @@ void updateOledSleep(unsigned long now) {
 }
 
 void resetKeyTracking() {
+    encoderMediaAction = ConsumerAction::NONE;
+    encoderVolumeSteps = 0;
+    encoderClicks = 0;
+    RotaryEncoder::discard();
     const unsigned long now = millis();
     for (uint8_t i = 0; i < NUM_KEYS; i++) {
         key_state[i] = false;
@@ -341,6 +352,9 @@ void pressHidKey(uint8_t keycode) {
 }
 
 void releaseAllHid() {
+    // 普通按键重建报告/打开菜单时也会释放媒体键，同步结束旋钮短按。
+    encoderMediaAction = ConsumerAction::NONE;
+    encoderMediaAt = millis();
     if (keyboard_mode == KeyboardMode::USB && usb_mounted) {
         usbKeyboard.releaseAll();
         usbConsumer.release();
@@ -396,6 +410,79 @@ void pressBinding(const KeyBinding &binding) {
     } else if (binding.action == KeyActionType::CONSUMER) {
         pressConsumer(static_cast<ConsumerAction>(binding.consumer));
     }
+}
+
+/**
+ * @brief 将 EC11 动作转换为 USB/BLE 媒体短按。
+ * 旋钮只操作 Consumer 报告，不释放用户仍按住的字母或 Ctrl/Win。
+ * 普通媒体按键占用通道时优先保留它；菜单和离线期间不积压旋钮命令。
+ */
+void updateEncoderMedia(uint32_t now) {
+    const int8_t steps = RotaryEncoder::takeSteps();
+    const bool clicked = RotaryEncoder::updateButton(now);
+    if (steps != 0 || clicked) wakeOled();
+
+    const bool connected = keyboard_mode == KeyboardMode::USB
+        ? usb_mounted : bleKeyboard.isConnected();
+    bool mediaKeyHeld = false;
+    for (uint8_t i = 0; i < NUM_KEYS; ++i) {
+        if (key_state[i] && !profile_switch_consumed[i] &&
+            keyProfiles.binding(i).action == KeyActionType::CONSUMER) {
+            mediaKeyHeld = true;
+        }
+    }
+    if (!connected || settingsMenu.active || mediaKeyHeld) {
+        // 菜单进入/按键变化已经调用 releaseAllHid()；离线时没有可发送的主机。
+        if (!connected && keyboard_mode == KeyboardMode::BLE &&
+            encoderMediaAction != ConsumerAction::NONE) {
+            // BLE 库在断线后仍缓存媒体位；只清理旋钮所用位，防止重连带出旧动作。
+            bleKeyboard.release(KEY_MEDIA_VOLUME_UP);
+            bleKeyboard.release(KEY_MEDIA_VOLUME_DOWN);
+            bleKeyboard.release(KEY_MEDIA_PLAY_PAUSE);
+        }
+        encoderVolumeSteps = 0;
+        encoderClicks = 0;
+        encoderMediaAction = ConsumerAction::NONE;
+        RotaryEncoder::discard();
+        return;
+    }
+
+    encoderVolumeSteps = constrain(static_cast<int>(encoderVolumeSteps) + steps, -32, 32);
+    if (clicked && encoderClicks < 8) ++encoderClicks;
+
+    // USB 键盘与数字孪生共享端点，端点忙时下轮再发送，不能等待重试。
+    if (keyboard_mode == KeyboardMode::USB && !tud_hid_ready()) return;
+    if (encoderMediaAction != ConsumerAction::NONE) {
+        if (now - encoderMediaAt < 20) return;
+        if (keyboard_mode == KeyboardMode::USB) {
+            if (!usbConsumer.release()) return;
+        } else {
+            switch (encoderMediaAction) {
+                case ConsumerAction::VOLUME_UP: bleKeyboard.release(KEY_MEDIA_VOLUME_UP); break;
+                case ConsumerAction::VOLUME_DOWN: bleKeyboard.release(KEY_MEDIA_VOLUME_DOWN); break;
+                case ConsumerAction::PLAY_PAUSE: bleKeyboard.release(KEY_MEDIA_PLAY_PAUSE); break;
+                default: break;
+            }
+        }
+        encoderMediaAction = ConsumerAction::NONE;
+        encoderMediaAt = now;
+        return;
+    }
+    // 连续转动的每一步之间保留释放间隔，主机才能区分独立音量脉冲。
+    if (now - encoderMediaAt < 12) return;
+    const ConsumerAction action = encoderClicks > 0 ? ConsumerAction::PLAY_PAUSE
+        : encoderVolumeSteps > 0 ? ConsumerAction::VOLUME_UP
+        : encoderVolumeSteps < 0 ? ConsumerAction::VOLUME_DOWN : ConsumerAction::NONE;
+    if (action == ConsumerAction::NONE) return;
+    if (keyboard_mode == KeyboardMode::USB) {
+        if (!usbConsumer.press(usbConsumerUsage(action))) return;
+    } else {
+        pressConsumer(action);
+    }
+    if (action == ConsumerAction::PLAY_PAUSE) --encoderClicks;
+    else encoderVolumeSteps += encoderVolumeSteps > 0 ? -1 : 1;
+    encoderMediaAction = action;
+    encoderMediaAt = now;
 }
 
 /** 根据物理按键状态重建完整 HID 报告，避免修饰键卡住。 */
@@ -834,6 +921,7 @@ void selectSettingsItem() {
                 oledTwin.notifyActiveProfileChanged();
             }
             deviceSettings.factoryReset();
+            oledRuntime.clearCustomBitmap();
             oledRuntime.configure(
                 static_cast<OledPage>(deviceSettings.data().oledPage),
                 deviceSettings.data().oledAutoClaude
@@ -1182,6 +1270,7 @@ void setup() {
     Serial.println("SSD1306 init OK");
 
     deviceSettings.begin();
+    oledRuntime.begin();
     oledRuntime.configure(
         static_cast<OledPage>(deviceSettings.data().oledPage),
         deviceSettings.data().oledAutoClaude
@@ -1197,6 +1286,8 @@ void setup() {
         pinMode(KEY_PINS[i], INPUT_PULLUP);
     }
 
+    // 初始化 EC11：A/B 双相中断，按压开关由主循环消抖。
+    RotaryEncoder::begin();
     // 初始化 RGB 灯带。
     rbgLedInit();
     applyRgbSettings();
@@ -1287,6 +1378,10 @@ void loop() {
         }
         display_dirty = true;
     }
+
+    updateEncoderMedia(millis());
+    // 旋钮唤醒可能刷新活动时间，重新取时避免后续休眠计算使用较早的 now。
+    now = millis();
 
     // 按键扫描和HID发送完成后再做低频ADC采样，避免电池测量增加输入路径延迟。
     // 只有百分比、有效状态或至少10mV的显示值变化时，才刷新OLED和通知主机。

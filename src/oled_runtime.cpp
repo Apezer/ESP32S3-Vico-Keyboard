@@ -5,6 +5,7 @@
 
 #include "oled_runtime.h"
 
+#include <Preferences.h>
 #include <cstring>
 
 namespace {
@@ -17,6 +18,18 @@ constexpr char SERVICE_UUID[] = "7b6a0001-7c6e-4b3d-9f5f-7669636f0001";
 constexpr char RX_UUID[] = "7b6a0002-7c6e-4b3d-9f5f-7669636f0002";
 constexpr char TX_UUID[] = "7b6a0003-7c6e-4b3d-9f5f-7669636f0003";
 constexpr uint32_t CLAUDE_DONE_OVERLAY_MS = 5000;
+constexpr char BITMAP_NVS_NAMESPACE[] = "vico_oled";
+constexpr char BITMAP_NVS_KEY[] = "custom";
+constexpr uint32_t BITMAP_STORAGE_MAGIC = 0x56424954;  // “VBIT”
+constexpr uint8_t BITMAP_STORAGE_VERSION = 1;
+
+/** NVS 中的独立位图记录；CRC32 可拒绝掉电中断造成的不完整写入。 */
+struct __attribute__((packed)) StoredCustomBitmap {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t bitmap[128 * 64 / 8];
+    uint32_t crc32;
+};
 
 String jsonStringValue(const String &json, const char *key) {
     const String marker = String("\"") + key + "\"";
@@ -77,6 +90,29 @@ void copyAscii(char *destination, size_t capacity, const String &source) {
 // =============================================================================
 // 页面设置与 32 字节运行时协议
 // =============================================================================
+
+void OledRuntime::begin() {
+    // 没有有效缓存时保持全黑画布；这不会影响其他 OLED 页面。
+    std::memset(customBitmap_, 0, sizeof(customBitmap_));
+    loadCustomBitmap();
+    dirty_ = true;
+}
+
+bool OledRuntime::clearCustomBitmap() {
+    std::memset(customBitmap_, 0, sizeof(customBitmap_));
+    std::memset(pendingBitmap_, 0, sizeof(pendingBitmap_));
+    pendingBitmapOffset_ = 0;
+    pendingBitmapCrc_ = 0;
+    bitmapTransferActive_ = false;
+    dirty_ = true;
+
+    Preferences preferences;
+    if (!preferences.begin(BITMAP_NVS_NAMESPACE, false)) return false;
+    const bool removed = !preferences.isKey(BITMAP_NVS_KEY) ||
+        preferences.remove(BITMAP_NVS_KEY);
+    preferences.end();
+    return removed;
+}
 
 void OledRuntime::configure(OledPage page, bool autoClaude) {
     if (static_cast<uint8_t>(page) > static_cast<uint8_t>(OledPage::CUSTOM)) {
@@ -207,6 +243,17 @@ bool OledRuntime::applyPacket(const uint8_t *data, size_t length) {
         std::memcpy(customBitmap_, pendingBitmap_, BITMAP_BYTES);
         dirty_ = true;
         return true;
+    }
+
+    // BITMAP_SAVE：只在用户点击“保存到键盘”后写入 NVS。CRC 必须与当前
+    // 已提交的完整画面一致，从而避免把残缺或过期的传输内容写入 Flash。
+    if (data[2] == PACKET_BITMAP_SAVE) {
+        const uint32_t expectedCrc =
+            static_cast<uint32_t>(data[3]) |
+            (static_cast<uint32_t>(data[4]) << 8) |
+            (static_cast<uint32_t>(data[5]) << 16) |
+            (static_cast<uint32_t>(data[6]) << 24);
+        return saveCustomBitmap(expectedCrc);
     }
     return false;
 }
@@ -356,6 +403,44 @@ uint32_t OledRuntime::calculateCrc32(const uint8_t *data, size_t length) {
         }
     }
     return ~crc;
+}
+
+bool OledRuntime::loadCustomBitmap() {
+    Preferences preferences;
+    if (!preferences.begin(BITMAP_NVS_NAMESPACE, true)) return false;
+
+    StoredCustomBitmap stored = {};
+    const size_t length = preferences.getBytesLength(BITMAP_NVS_KEY);
+    const size_t read = length == sizeof(stored)
+        ? preferences.getBytes(BITMAP_NVS_KEY, &stored, sizeof(stored))
+        : 0;
+    preferences.end();
+
+    if (read != sizeof(stored) || stored.magic != BITMAP_STORAGE_MAGIC ||
+        stored.version != BITMAP_STORAGE_VERSION ||
+        calculateCrc32(stored.bitmap, sizeof(stored.bitmap)) != stored.crc32) {
+        return false;
+    }
+
+    std::memcpy(customBitmap_, stored.bitmap, sizeof(customBitmap_));
+    return true;
+}
+
+bool OledRuntime::saveCustomBitmap(uint32_t expectedCrc) const {
+    const uint32_t actualCrc = calculateCrc32(customBitmap_, sizeof(customBitmap_));
+    if (actualCrc != expectedCrc) return false;
+
+    StoredCustomBitmap stored = {};
+    stored.magic = BITMAP_STORAGE_MAGIC;
+    stored.version = BITMAP_STORAGE_VERSION;
+    std::memcpy(stored.bitmap, customBitmap_, sizeof(stored.bitmap));
+    stored.crc32 = actualCrc;
+
+    Preferences preferences;
+    if (!preferences.begin(BITMAP_NVS_NAMESPACE, false)) return false;
+    const size_t written = preferences.putBytes(BITMAP_NVS_KEY, &stored, sizeof(stored));
+    preferences.end();
+    return written == sizeof(stored);
 }
 
 void OledRuntime::notifyPage() {
