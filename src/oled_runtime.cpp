@@ -132,6 +132,19 @@ void OledRuntime::setPageSettings(OledPage page, bool autoClaude) {
 bool OledRuntime::applyPacket(const uint8_t *data, size_t length) {
     if (!validPacket(data, length)) return false;
 
+    // 语音录制和排空期间仅接受语音会话控制，其他运行时设置由软件在结束后重发。
+    if (voiceCapture_ != nullptr && voiceCapture_->active() && data[2] != PACKET_VOICE_SESSION) {
+        return false;
+    }
+
+    if (data[2] == PACKET_VOICE_SESSION) {
+        voiceSessionActive_ = data[3] != 0;
+        if (!voiceSessionActive_ && voiceCapture_ != nullptr && voiceCapture_->active()) {
+            voiceCapture_->abort(VoiceCapture::ErrorCode::TRANSPORT_UNAVAILABLE);
+        }
+        return true;
+    }
+
     // STATUS：一次更新 Claude 主状态、性能指标、电脑时间和当前工具。
     if (data[2] == PACKET_STATUS) {
         const auto nextClaudeState = data[3] <= static_cast<uint8_t>(ClaudeState::ERROR_STATE)
@@ -363,10 +376,44 @@ void OledRuntime::beginBle(NimBLEServer *server) {
 void OledRuntime::endBle() {
     rx_ = nullptr;
     tx_ = nullptr;
+    voiceSessionActive_ = false;
+    voiceConnectionHandle_ = BLE_HS_CONN_HANDLE_NONE;
+    voiceMtu_ = 23;
+    if (voiceCapture_ != nullptr && voiceCapture_->active()) {
+        voiceCapture_->abort(VoiceCapture::ErrorCode::TRANSPORT_UNAVAILABLE);
+    }
+}
+
+void OledRuntime::handleBleDisconnect(uint16_t connectionHandle) {
+    if (connectionHandle != voiceConnectionHandle_) return;
+    voiceSessionActive_ = false;
+    voiceConnectionHandle_ = BLE_HS_CONN_HANDLE_NONE;
+    voiceMtu_ = 23;
+    if (voiceCapture_ != nullptr && voiceCapture_->active()) {
+        voiceCapture_->abort(VoiceCapture::ErrorCode::TRANSPORT_UNAVAILABLE);
+    }
+}
+
+void OledRuntime::updateBleVoice(uint32_t now) {
+    if (!voiceReady() || voiceCapture_ == nullptr || !voiceCapture_->active() ||
+        now - lastVoicePacketAt_ < 1) return;
+
+    // ATT 通知最多携带 MTU-3 字节。限制为 244 可覆盖常见的 247 MTU，
+    // 同时使用实际协商值兼容较小 MTU 的 Windows 蓝牙适配器。
+    constexpr size_t MAX_NOTIFICATION_BYTES = 244;
+    const size_t capacity = min<size_t>(
+        MAX_NOTIFICATION_BYTES,
+        voiceMtu_ > 3 ? voiceMtu_ - 3 : 20
+    );
+    uint8_t packet[MAX_NOTIFICATION_BYTES] = {};
+    size_t packetLength = 0;
+    if (!voiceCapture_->buildNextPacket(packet, capacity, packetLength)) return;
+    if (!tx_->notify(packet, packetLength, voiceConnectionHandle_)) return;
+    voiceCapture_->markPacketSent(packetLength);
+    lastVoicePacketAt_ = now;
 }
 
 void OledRuntime::onWrite(NimBLECharacteristic *characteristic, NimBLEConnInfo &connInfo) {
-    (void)connInfo;
     if (characteristic != rx_) return;
     const std::string value = characteristic->getValue();
     // 首个非空白字符为“{”时走 JSON 兼容路径，否则按 32 字节二进制包解析。
@@ -375,7 +422,12 @@ void OledRuntime::onWrite(NimBLECharacteristic *characteristic, NimBLEConnInfo &
         if (applyJson(value.data(), value.size())) notifyJsonAck();
         return;
     }
-    applyPacket(reinterpret_cast<const uint8_t *>(value.data()), value.size());
+    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(value.data());
+    if (validPacket(bytes, value.size()) && bytes[2] == PACKET_VOICE_SESSION) {
+        voiceConnectionHandle_ = connInfo.getConnHandle();
+        voiceMtu_ = connInfo.getMTU();
+    }
+    applyPacket(bytes, value.size());
 }
 
 // =============================================================================

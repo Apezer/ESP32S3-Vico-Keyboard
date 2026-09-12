@@ -54,6 +54,7 @@
 #include "oled_twin.h"
 #include "rbg_led.h"
 #include "rotary_encoder.h"
+#include "voice_capture.h"
 
 #if !ARDUINO_USB_MODE
 #error "Native USB must be enabled with ARDUINO_USB_MODE=1."
@@ -107,11 +108,12 @@ static uint8_t usb_prompt_frame = 0;
 static unsigned long usb_prompt_frame_at = 0;
 static unsigned long last_user_activity_at = 0;
 static bool oled_sleeping = false;
-// 旋钮媒体键使用短按状态机，按下和释放分散到不同循环，不阻塞按键扫描。
+// 旋钮旋转使用媒体键短按状态机；旋钮按压边沿由语音会话单独处理。
 static ConsumerAction encoderMediaAction = ConsumerAction::NONE;
 static int8_t encoderVolumeSteps = 0;
-static uint8_t encoderClicks = 0;
 static uint32_t encoderMediaAt = 0;
+// 语音结束时仍按住的物理键必须先松开，不能在恢复扫描后补发旧按键。
+static bool voiceSuppressKeysUntilRelease = false;
 
 /** @brief 设备端设置菜单的页面状态。 */
 enum class SettingsScreen : uint8_t {
@@ -141,6 +143,7 @@ static SettingsMenuState settingsMenu;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 OledRuntime oledRuntime;
 BatteryMonitor batteryMonitor;
+VoiceCapture voiceCapture;
 
 /** @brief 在标准 BLE HID 服务启动阶段追加 Vico OLED 状态 GATT 服务。 */
 class VicoBleKeyboard : public BleKeyboard {
@@ -154,6 +157,11 @@ public:
 protected:
     void onStarted(NimBLEServer *server) override {
         oledRuntime.beginBle(server);
+    }
+
+    void onDisconnect(NimBLEServer *server, NimBLEConnInfo &connInfo, int reason) override {
+        oledRuntime.handleBleDisconnect(connInfo.getConnHandle());
+        BleKeyboard::onDisconnect(server, connInfo, reason);
     }
 };
 
@@ -203,7 +211,6 @@ void updateOledSleep(unsigned long now) {
 void resetKeyTracking() {
     encoderMediaAction = ConsumerAction::NONE;
     encoderVolumeSteps = 0;
-    encoderClicks = 0;
     RotaryEncoder::discard();
     const unsigned long now = millis();
     for (uint8_t i = 0; i < NUM_KEYS; i++) {
@@ -231,7 +238,7 @@ void startKeyboardInterface(KeyboardMode mode) {
             USB.productName("Vico Keyboard");
             usbKeyboard.begin();
             usbConsumer.begin();
-            oledTwin.begin(&keyProfiles, &oledRuntime);
+            oledTwin.begin(&keyProfiles, &oledRuntime, &voiceCapture);
             usb_started = USB.begin();
         } else {
             tud_connect();
@@ -413,14 +420,33 @@ void pressBinding(const KeyBinding &binding) {
 }
 
 /**
- * @brief 将 EC11 动作转换为 USB/BLE 媒体短按。
- * 旋钮只操作 Consumer 报告，不释放用户仍按住的字母或 Ctrl/Win。
- * 普通媒体按键占用通道时优先保留它；菜单和离线期间不积压旋钮命令。
+ * @brief 将 EC11 旋转转换为音量短按，并用按压边沿控制语音会话。
+ *
+ * 按下旋钮会先释放全部 HID 状态，再启动最高优先级录音；松开后停止采样。
+ * 录音期间丢弃旋转量，不发送音量或暂停键。
  */
 void updateEncoderMedia(uint32_t now) {
     const int8_t steps = RotaryEncoder::takeSteps();
-    const bool clicked = RotaryEncoder::updateButton(now);
-    if (steps != 0 || clicked) wakeOled();
+    const RotaryEncoder::ButtonEvent buttonEvent = RotaryEncoder::updateButton(now);
+    if (steps != 0 || buttonEvent != RotaryEncoder::ButtonEvent::NONE) wakeOled();
+
+    if (voiceCapture.active()) {
+        encoderVolumeSteps = 0;
+        encoderMediaAction = ConsumerAction::NONE;
+        if (buttonEvent == RotaryEncoder::ButtonEvent::RELEASED) voiceCapture.stop(now);
+        return;
+    }
+
+    if (!settingsMenu.active && buttonEvent == RotaryEncoder::ButtonEvent::PRESSED) {
+        const bool transportReady = keyboard_mode == KeyboardMode::USB
+            ? usb_mounted && oledTwin.voiceReady()
+            : bleKeyboard.isConnected() && oledRuntime.voiceReady();
+        releaseAllHid();
+        encoderVolumeSteps = 0;
+        if (voiceCapture.start(now, transportReady)) voiceSuppressKeysUntilRelease = true;
+        display_dirty = true;
+        return;
+    }
 
     const bool connected = keyboard_mode == KeyboardMode::USB
         ? usb_mounted : bleKeyboard.isConnected();
@@ -441,14 +467,12 @@ void updateEncoderMedia(uint32_t now) {
             bleKeyboard.release(KEY_MEDIA_PLAY_PAUSE);
         }
         encoderVolumeSteps = 0;
-        encoderClicks = 0;
         encoderMediaAction = ConsumerAction::NONE;
         RotaryEncoder::discard();
         return;
     }
 
     encoderVolumeSteps = constrain(static_cast<int>(encoderVolumeSteps) + steps, -32, 32);
-    if (clicked && encoderClicks < 8) ++encoderClicks;
 
     // USB 键盘与数字孪生共享端点，端点忙时下轮再发送，不能等待重试。
     if (keyboard_mode == KeyboardMode::USB && !tud_hid_ready()) return;
@@ -470,8 +494,7 @@ void updateEncoderMedia(uint32_t now) {
     }
     // 连续转动的每一步之间保留释放间隔，主机才能区分独立音量脉冲。
     if (now - encoderMediaAt < 12) return;
-    const ConsumerAction action = encoderClicks > 0 ? ConsumerAction::PLAY_PAUSE
-        : encoderVolumeSteps > 0 ? ConsumerAction::VOLUME_UP
+    const ConsumerAction action = encoderVolumeSteps > 0 ? ConsumerAction::VOLUME_UP
         : encoderVolumeSteps < 0 ? ConsumerAction::VOLUME_DOWN : ConsumerAction::NONE;
     if (action == ConsumerAction::NONE) return;
     if (keyboard_mode == KeyboardMode::USB) {
@@ -479,8 +502,7 @@ void updateEncoderMedia(uint32_t now) {
     } else {
         pressConsumer(action);
     }
-    if (action == ConsumerAction::PLAY_PAUSE) --encoderClicks;
-    else encoderVolumeSteps += encoderVolumeSteps > 0 ? -1 : 1;
+    encoderVolumeSteps += encoderVolumeSteps > 0 ? -1 : 1;
     encoderMediaAction = action;
     encoderMediaAt = now;
 }
@@ -1208,6 +1230,46 @@ void renderRuntimePage() {
     }
 }
 
+/** @brief 绘制录音、排空或错误状态；语音会话期间覆盖普通 OLED 页面。 */
+void renderVoiceCapturePage() {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.print("VOICE INPUT");
+    display.setCursor(103, 0);
+    display.print(keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
+    display.drawLine(0, 12, 127, 12, SSD1306_WHITE);
+
+    if (voiceCapture.recording()) {
+        const uint32_t elapsed = voiceCapture.recordedMilliseconds(millis());
+        display.setCursor(0, 18);
+        display.printf("RECORDING  %02lu:%02lu", elapsed / 60000, (elapsed / 1000) % 60);
+        display.drawRect(0, 32, 128, 10, SSD1306_WHITE);
+        const uint8_t fill = static_cast<uint8_t>(voiceCapture.levelPercent() * 124 / 100);
+        if (fill > 0) display.fillRect(2, 34, fill, 6, SSD1306_WHITE);
+        display.setCursor(8, 52);
+        display.print("RELEASE KNOB TO SEND");
+    } else if (voiceCapture.state() == VoiceCapture::State::ERROR_NOTICE) {
+        display.setCursor(20, 22);
+        display.print("VOICE NOT READY");
+        display.setCursor(4, 42);
+        display.print("CONNECT APP / CHECK MIC");
+    } else {
+        display.setCursor(22, 22);
+        display.print("SENDING AUDIO");
+        const uint32_t total = voiceCapture.capturedBytes();
+        const uint8_t percent = total == 0
+            ? 100
+            : static_cast<uint8_t>(min<uint32_t>(100, voiceCapture.sentBytes() * 100 / total));
+        display.drawRect(0, 37, 128, 10, SSD1306_WHITE);
+        if (percent > 0) display.fillRect(2, 39, percent * 124 / 100, 6, SSD1306_WHITE);
+        display.setCursor(52, 52);
+        display.printf("%u%%", percent);
+    }
+    commitOledFrame();
+}
+
 // =============================================================================
 // OLED 顶层页面调度
 // =============================================================================
@@ -1215,6 +1277,10 @@ void renderRuntimePage() {
 // OledRuntime::effectivePage() 决定品牌、Coding、性能等运行时页面。
 
 void renderKeyStatus() {
+    if (voiceCapture.active()) {
+        renderVoiceCapturePage();
+        return;
+    }
     if (settingsMenu.active) {
         renderSettingsMenu();
         return;
@@ -1271,6 +1337,7 @@ void setup() {
 
     deviceSettings.begin();
     oledRuntime.begin();
+    oledRuntime.attachVoiceCapture(&voiceCapture);
     oledRuntime.configure(
         static_cast<OledPage>(deviceSettings.data().oledPage),
         deviceSettings.data().oledAutoClaude
@@ -1301,6 +1368,8 @@ void setup() {
     );
 
     startKeyboardInterface(keyboard_mode);
+    // HID 服务优先完成启动；麦克风 I2S 在首次按压旋钮时才真正安装。
+    voiceCapture.begin();
 
     // 跳过 Claude Code 开机画面，直接显示键盘状态。
     renderKeyStatus();
@@ -1315,9 +1384,41 @@ void setup() {
 
 /** @brief 非阻塞调度连接、按键、设置、OLED、RGB 和数字孪生任务。 */
 void loop() {
-    updateModeSwitch();
+    // 语音会话期间冻结拨片切换，避免传输中途销毁当前 USB/BLE 接口。
+    if (!voiceCapture.active()) updateModeSwitch();
     unsigned long now = millis();
     updateUsbConnectionState(now);
+
+    // 旋钮按压决定是否进入语音独占状态，因此必须先于按键、RGB 和后台同步处理。
+    updateEncoderMedia(now);
+    if (voiceCapture.active()) {
+        const bool transportReady = keyboard_mode == KeyboardMode::USB
+            ? usb_mounted && oledTwin.voiceReady()
+            : bleKeyboard.isConnected() && oledRuntime.voiceReady();
+        if (!transportReady && voiceCapture.state() != VoiceCapture::State::ERROR_NOTICE) {
+            voiceCapture.abort(VoiceCapture::ErrorCode::TRANSPORT_UNAVAILABLE);
+        }
+
+        voiceCapture.update(now);
+        if (keyboard_mode == KeyboardMode::USB) {
+            oledTwin.update(usb_mounted);
+        } else {
+            oledRuntime.updateBleVoice(now);
+        }
+
+        if (voiceCapture.takeDisplayDirty()) display_dirty = true;
+        if (display_dirty) {
+            display_dirty = false;
+            renderKeyStatus();
+        }
+
+        // END/ERROR 包发送完成后恢复输入状态；会话期间产生的物理按键边沿全部丢弃。
+        if (!voiceCapture.active()) {
+            resetKeyTracking();
+            display_dirty = true;
+        }
+        return;
+    }
 
     if (profile_notice_until != 0 &&
         static_cast<int32_t>(now - profile_notice_until) >= 0) {
@@ -1338,6 +1439,17 @@ void loop() {
             last_change[i] = now;
             changed = true;
         }
+    }
+
+    if (voiceSuppressKeysUntilRelease) {
+        bool anyPressed = false;
+        for (uint8_t i = 0; i < NUM_KEYS; ++i) {
+            anyPressed |= key_state[i];
+            last_reported[i] = key_state[i];
+        }
+        if (!anyPressed) voiceSuppressKeysUntilRelease = false;
+        // 语音期间发生的所有按键边沿都被视为已消费，不允许恢复后补发。
+        changed = false;
     }
 
     if (changed) wakeOled();
@@ -1379,7 +1491,6 @@ void loop() {
         display_dirty = true;
     }
 
-    updateEncoderMedia(millis());
     // 旋钮唤醒可能刷新活动时间，重新取时避免后续休眠计算使用较早的 now。
     now = millis();
 

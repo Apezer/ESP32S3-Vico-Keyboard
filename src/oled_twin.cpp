@@ -17,7 +17,7 @@ constexpr uint8_t DISPLAY_WIDTH = 128;
 constexpr uint8_t DISPLAY_HEIGHT = 64;
 constexpr uint8_t SSD1306_PAGE_LAYOUT = 1;
 constexpr uint8_t FIRMWARE_VERSION_MAJOR = 0;
-constexpr uint8_t FIRMWARE_VERSION_MINOR = 7;
+constexpr uint8_t FIRMWARE_VERSION_MINOR = 8;
 constexpr uint8_t FIRMWARE_VERSION_PATCH = 0;
 }
 
@@ -25,11 +25,16 @@ constexpr uint8_t FIRMWARE_VERSION_PATCH = 0;
 // 生命周期、事件合并与帧捕获
 // =============================================================================
 
-void OledTwinTransport::begin(KeyProfileManager *profiles, OledRuntime *runtime) {
+void OledTwinTransport::begin(
+    KeyProfileManager *profiles,
+    OledRuntime *runtime,
+    VoiceCapture *voiceCapture
+) {
     if (started_) return;
 
     profiles_ = profiles;
     runtime_ = runtime;
+    voiceCapture_ = voiceCapture;
 
     // 一张自定义像素画会连续发送 42 份报告。接收队列必须能完整容纳
     // 一次突发传输，否则 TinyUSB 来不及逐包处理时会丢失中间分片。
@@ -85,6 +90,15 @@ void OledTwinTransport::captureFrame(const uint8_t *frame, size_t length) {
 
 void OledTwinTransport::update(bool usbMounted) {
     if (!started_ || !usbMounted) return;
+
+    // 语音会话独占 Vendor HID 输入报告。其间不读取配置命令，也不发送
+    // OLED、预设、电池等事件，确保音频获得完整端点带宽。
+    if (voiceCapture_ != nullptr && voiceCapture_->active()) {
+        if (!subscribed_ || !tud_hid_ready()) return;
+        if (millis() - lastReportAt_ < REPORT_INTERVAL_MS) return;
+        sendVoicePacket();
+        return;
+    }
 
     processHostCommand();
 
@@ -312,6 +326,18 @@ bool OledTwinTransport::sendBatteryChanged() {
         static_cast<uint8_t>(batteryMillivolts_ >> 8),
     };
     return sendPacket(Command::BATTERY_STATUS_CHANGED, payload, sizeof(payload));
+}
+
+bool OledTwinTransport::sendVoicePacket() {
+    uint8_t payload[MAX_PAYLOAD_BYTES] = {};
+    size_t payloadLength = 0;
+    if (voiceCapture_ == nullptr ||
+        !voiceCapture_->buildNextPacket(payload, sizeof(payload), payloadLength)) {
+        return false;
+    }
+    if (!sendPacket(Command::VOICE_PACKET, payload, static_cast<uint8_t>(payloadLength))) return false;
+    voiceCapture_->markPacketSent(payloadLength);
+    return true;
 }
 
 bool OledTwinTransport::sendFramePacket() {

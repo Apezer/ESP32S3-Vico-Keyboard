@@ -92,6 +92,8 @@ BleKeyboard::BleKeyboard(std::string deviceName, std::string deviceManufacturer,
 void BleKeyboard::begin(void)
 {
   NimBLEDevice::init(deviceName);
+  // 为 Vico 语音通知预留较大的 ATT 载荷；对端不支持时会自动协商为较小值。
+  NimBLEDevice::setMTU(247);
   NimBLEServer* pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(this);
   // Set server auto-restart advertise on
@@ -497,6 +499,9 @@ size_t BleKeyboard::write(const uint8_t *buffer, size_t size) {
 
 void BleKeyboard::onConnect(NimBLEServer* pServer, NimBLEConnInfo &connInfo) {
   this->connected = true;
+
+  // 请求低延迟连接参数。语音会话之外仅降低状态同步等待，不改变 HID 报告格式。
+  pServer->updateConnParams(connInfo.getConnHandle(), 6, 12, 0, 200);
 
   // Windows 建立 HID 连接后继续广播自定义 GATT 服务，允许配套软件建立第二条连接。
   if (pServer->getConnectedCount() < NIMBLE_MAX_CONNECTIONS) {

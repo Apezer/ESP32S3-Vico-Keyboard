@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include "voice_capture.h"
 
 /** @brief 用户可以选择的 OLED 页面编号，数值属于持久化和通信协议。 */
 enum class OledPage : uint8_t {
@@ -136,6 +137,14 @@ public:
     void beginBle(NimBLEServer *server);
     /** @brief BLE 协议栈关闭后清理失效的 characteristic 指针。 */
     void endBle();
+    /** @brief 清理属于已断开 GATT 客户端的语音订阅。 */
+    void handleBleDisconnect(uint16_t connectionHandle);
+    /** @brief 绑定语音采集模块，供 BLE 通知通道独占发送音频。 */
+    void attachVoiceCapture(VoiceCapture *voiceCapture) { voiceCapture_ = voiceCapture; }
+    /** @brief 配套软件已经订阅语音会话且 GATT 通道有效时返回 true。 */
+    bool voiceReady() const { return tx_ != nullptr && voiceSessionActive_; }
+    /** @brief 使用当前协商 MTU 尽可能发送一份语音包。 */
+    void updateBleVoice(uint32_t now);
 
 protected:
     void onWrite(NimBLECharacteristic *characteristic, NimBLEConnInfo &connInfo) override;
@@ -152,6 +161,7 @@ private:
     static constexpr uint8_t PACKET_CLAUDE_TEXT = 6;
     static constexpr uint8_t PACKET_RGB_SETTINGS = 7;
     static constexpr uint8_t PACKET_BITMAP_SAVE = 8;
+    static constexpr uint8_t PACKET_VOICE_SESSION = 9;
     static constexpr size_t BITMAP_BYTES = 128 * 64 / 8;
 
     // 当前正式运行状态和主循环使用的单次变化标记。
@@ -163,6 +173,11 @@ private:
     // BLE characteristic 仅在 BLE 协议栈存活期间有效。
     NimBLECharacteristic *rx_ = nullptr;
     NimBLECharacteristic *tx_ = nullptr;
+    VoiceCapture *voiceCapture_ = nullptr;
+    bool voiceSessionActive_ = false;
+    uint16_t voiceConnectionHandle_ = BLE_HS_CONN_HANDLE_NONE;
+    uint16_t voiceMtu_ = 23;
+    uint32_t lastVoicePacketAt_ = 0;
     // 双缓冲保证传输失败时仍继续显示上一张完整自定义位图。
     uint8_t customBitmap_[BITMAP_BYTES] = {};
     uint8_t pendingBitmap_[BITMAP_BYTES] = {};

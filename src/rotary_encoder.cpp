@@ -45,15 +45,15 @@ int8_t RotaryEncoder::takeSteps() {
     return steps;
 }
 
-bool RotaryEncoder::updateButton(uint32_t now) {
+RotaryEncoder::ButtonEvent RotaryEncoder::updateButton(uint32_t now) {
     const bool pressed = digitalRead(PIN_SWITCH) == LOW;
     if (pressed != buttonRaw) {
         buttonRaw = pressed;
         buttonChangedAt = now;
     }
-    if (buttonStable == buttonRaw || now - buttonChangedAt < 25) return false;
+    if (buttonStable == buttonRaw || now - buttonChangedAt < 25) return ButtonEvent::NONE;
     buttonStable = buttonRaw;
-    return buttonStable;
+    return buttonStable ? ButtonEvent::PRESSED : ButtonEvent::RELEASED;
 }
 
 void RotaryEncoder::discard() {

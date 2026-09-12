@@ -12,6 +12,7 @@
 #include "USBHIDVendor.h"
 #include "key_profiles.h"
 #include "oled_runtime.h"
+#include "voice_capture.h"
 
 /**
  * 将 SSD1306 的精确帧缓冲区传输到桌面应用。
@@ -27,7 +28,7 @@ public:
     static constexpr size_t FRAME_BYTES = 128 * 64 / 8;
 
     /** 在调用 USB.begin() 前注册 Vendor HID 报告。 */
-    void begin(KeyProfileManager *profiles, OledRuntime *runtime);
+    void begin(KeyProfileManager *profiles, OledRuntime *runtime, VoiceCapture *voiceCapture);
 
     /** 原生 USB 断开时清除当前主机订阅。 */
     void resetSession();
@@ -40,6 +41,9 @@ public:
 
     /** 处理主机命令，并最多发送一份队列中的报告。 */
     void update(bool usbMounted);
+
+    /** @brief 软件已完成 USB 握手并订阅设备事件时返回 true。 */
+    bool voiceReady() const { return started_ && subscribed_; }
 
     /** 命令更改活动预设或其绑定后返回一次 true。 */
     bool takeProfileChanged();
@@ -75,6 +79,7 @@ private:
         PROFILE_ACTIVE_CHANGED = 0x91,
         RUNTIME_SETTINGS_CHANGED = 0x92,
         BATTERY_STATUS_CHANGED = 0x93,
+        VOICE_PACKET = 0x94,
     };
 
     /** @brief 一帧 1024 字节 OLED 数据的分片发送状态。 */
@@ -89,6 +94,7 @@ private:
     USBHIDVendor vendor_{REPORT_BYTES, false};
     KeyProfileManager *profiles_ = nullptr;
     OledRuntime *runtime_ = nullptr;
+    VoiceCapture *voiceCapture_ = nullptr;
     bool started_ = false;
     bool subscribed_ = false;
     // 控制包和主动事件使用单槽合并队列，始终保留最新状态。
@@ -122,6 +128,7 @@ private:
     bool sendProfileChanged();
     bool sendRuntimeSettingsChanged();
     bool sendBatteryChanged();
+    bool sendVoicePacket();
     bool sendFramePacket();
     bool sendPacket(Command command, const uint8_t *payload, uint8_t payloadLength);
 
