@@ -4,8 +4,8 @@
  * @file voice_capture.h
  * @brief INMP441 流式采集和语音传输协议。
  *
- * 音频采用 16 kHz、16 bit、单声道 PCM。固件只保留固定大小的环形缓冲区，
- * 录音期间一边采样一边发送，不申请整段录音内存，也不在 ESP32 上调用云端 API。
+ * 音频采用 16 kHz、16 bit、单声道 PCM。USB 使用 32 KB 环形缓冲，
+ * BLE 使用 128 KB 环形缓冲；录音期间一边采样一边发送。
  */
 
 #include <Arduino.h>
@@ -43,8 +43,13 @@ public:
 
     /** @brief 准备录音模块；I2S 驱动延迟到第一次录音时安装。 */
     void begin();
-    /** @brief 旋钮按下时开始新的独占语音会话。 */
-    bool start(uint32_t now, bool transportReady);
+    /**
+     * @brief 旋钮按下时开始新的独占语音会话。
+     * @param now 当前毫秒计数。
+     * @param transportReady USB/BLE 接收端是否已就绪。
+     * @param useBleBuffer BLE 模式传 true，启用完整 128 KB 缓冲。
+     */
+    bool start(uint32_t now, bool transportReady, bool useBleBuffer);
     /** @brief 旋钮松开时停止采样，并排空仍在缓冲区中的音频。 */
     bool stop(uint32_t now);
     /** @brief 非阻塞读取一块已经到达 I2S DMA 的数据。 */
@@ -72,13 +77,16 @@ private:
     static constexpr uint8_t MIC_SD_PIN = 35;
     static constexpr uint8_t MIC_SCK_PIN = 36;
     static constexpr uint8_t MIC_WS_PIN = 37;
-    static constexpr size_t RING_BYTES = 32 * 1024;
+    static constexpr size_t USB_RING_BYTES = 32 * 1024;
+    static constexpr size_t BLE_RING_BYTES = 128 * 1024;
     static constexpr size_t CHUNK_HEADER_BYTES = 9;
 
     State state_ = State::IDLE;
     ErrorCode error_ = ErrorCode::MICROPHONE_UNAVAILABLE;
     bool microphoneReady_ = false;
-    uint8_t ring_[RING_BYTES] = {};
+    // 只保留一块物理缓冲区；USB 模式限制其有效范围，避免维护两份队列。
+    uint8_t ring_[BLE_RING_BYTES] = {};
+    size_t activeRingBytes_ = USB_RING_BYTES;
     size_t readOffset_ = 0;
     size_t writeOffset_ = 0;
     size_t queuedBytes_ = 0;

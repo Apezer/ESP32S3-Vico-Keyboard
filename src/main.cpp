@@ -443,7 +443,13 @@ void updateEncoderMedia(uint32_t now) {
             : bleKeyboard.isConnected() && oledRuntime.voiceReady();
         releaseAllHid();
         encoderVolumeSteps = 0;
-        if (voiceCapture.start(now, transportReady)) voiceSuppressKeysUntilRelease = true;
+        if (voiceCapture.start(
+                now,
+                transportReady,
+                keyboard_mode == KeyboardMode::BLE
+            )) {
+            voiceSuppressKeysUntilRelease = true;
+        }
         display_dirty = true;
         return;
     }

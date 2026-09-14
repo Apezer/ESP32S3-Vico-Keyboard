@@ -54,7 +54,7 @@ bool VoiceCapture::ensureMicrophone() {
     return true;
 }
 
-bool VoiceCapture::start(uint32_t now, bool transportReady) {
+bool VoiceCapture::start(uint32_t now, bool transportReady, bool useBleBuffer) {
     if (state_ != State::IDLE) return false;
     if (!transportReady) {
         abort(ErrorCode::TRANSPORT_UNAVAILABLE);
@@ -65,6 +65,9 @@ bool VoiceCapture::start(uint32_t now, bool transportReady) {
         return false;
     }
 
+    // BLE 吞吐量低于 USB，因此允许使用完整的 128 KB 内部 RAM 队列。
+    // USB 保持原来的 32 KB 有效范围，避免改变已经验证过的传输行为。
+    activeRingBytes_ = useBleBuffer ? BLE_RING_BYTES : USB_RING_BYTES;
     resetStream();
     startedAt_ = now;
     ++sessionId_;
@@ -138,7 +141,7 @@ void VoiceCapture::update(uint32_t now) {
 }
 
 bool VoiceCapture::enqueueSample(int16_t sample) {
-    if (RING_BYTES - queuedBytes_ < sizeof(sample)) return false;
+    if (activeRingBytes_ - queuedBytes_ < sizeof(sample)) return false;
 
     const uint8_t bytes[] = {
         static_cast<uint8_t>(sample & 0xFF),
@@ -146,7 +149,7 @@ bool VoiceCapture::enqueueSample(int16_t sample) {
     };
     for (uint8_t value : bytes) {
         ring_[writeOffset_] = value;
-        writeOffset_ = (writeOffset_ + 1) % RING_BYTES;
+        writeOffset_ = (writeOffset_ + 1) % activeRingBytes_;
     }
     queuedBytes_ += sizeof(sample);
     producedBytes_ += sizeof(sample);
@@ -194,7 +197,7 @@ bool VoiceCapture::buildNextPacket(uint8_t *destination, size_t capacity, size_t
         writeUint32(destination + 5, sentBytes_);
         const size_t chunkBytes = min(capacity - CHUNK_HEADER_BYTES, queuedBytes_);
         for (size_t index = 0; index < chunkBytes; ++index) {
-            destination[CHUNK_HEADER_BYTES + index] = ring_[(readOffset_ + index) % RING_BYTES];
+            destination[CHUNK_HEADER_BYTES + index] = ring_[(readOffset_ + index) % activeRingBytes_];
         }
         length = CHUNK_HEADER_BYTES + chunkBytes;
         return true;
@@ -228,7 +231,7 @@ void VoiceCapture::markPacketSent(size_t packetLength) {
     if ((state_ == State::RECORDING || state_ == State::DRAINING) &&
         packetLength >= CHUNK_HEADER_BYTES) {
         const size_t consumed = min(packetLength - CHUNK_HEADER_BYTES, queuedBytes_);
-        readOffset_ = (readOffset_ + consumed) % RING_BYTES;
+        readOffset_ = (readOffset_ + consumed) % activeRingBytes_;
         queuedBytes_ -= consumed;
         sentBytes_ += consumed;
         if (state_ == State::DRAINING && queuedBytes_ == 0) state_ = State::END_NOTICE;
