@@ -1,157 +1,271 @@
-# ESP32-S3 Vico Dual-Mode Keyboard
+# ESP32-S3 Vico Keyboard Firmware
 
-基于 DFRobot FireBeetle 2 ESP32-S3 的 8 键 USB/BLE 双模式 HID 键盘，带 SSD1306 OLED 实时显示按键状态。
+Vico Keyboard 是一款基于 DFRobot FireBeetle 2 ESP32-S3 的 8 键可编程小键盘。
+固件同时支持 USB HID 与 BLE HID，可驱动 128×64 OLED、8 颗 WS2812B、EC11
+旋钮、INMP441 数字麦克风和电池电量检测，并通过专用数据通道与
+[Vico Deck 配套软件](https://github.com/Apezer/vico-deck)双向同步。
+
+## 主要功能
+
+- USB/BLE 双模式 HID 键盘，拨动 GPIO38 开关即可热切换，无需重启。
+- 8 个按键、5 套可编辑预设，按键映射和当前预设保存在 NVS 中。
+- EC11 顺时针调高音量、逆时针调低音量。
+- 按住 EC11 开始录音，松开后结束录音并交给配套软件进行云端语音识别。
+- OLED 支持品牌、Coding、性能、时钟、键盘状态和自定义像素画等页面。
+- OLED 数字孪生可将屏幕实际帧缓冲同步到配套软件，而不是重新模拟界面。
+- 8 颗 WS2812B 支持常亮、呼吸、七彩等灯效，并可从配套软件或板载菜单配置。
+- GPIO14 监测单节锂电池电压；电量可同步到 BLE Battery Service 和配套软件。
+- USB Vendor HID 与自定义 BLE GATT 共用统一的数据协议，用于配置、状态、
+  OLED 图像和语音数据传输。
 
 ## 硬件
 
-- **主控**: DFRobot FireBeetle 2 ESP32-S3
-- **显示**: 0.96寸 OLED (SSD1306, 128x64, I2C)
-- **按键**: 8 个轻触开关（下拉接地）
-- **模式开关**: SPDT 拨片开关，通过 GPIO38 在 BLE 与 USB 模式间选择
-- **灯光**: 8 颗 WS2812B，数据引脚 GPIO8
-- **旋钮**: EC11，A/B/SW 分别接 GPIO11/12/13，内部上拉
-- **麦克风**: INMP441，SD/WS/SCK 分别接 GPIO35/37/36，L/R 接 GND
-- **电池采样**: GPIO14，经 100K/100K 分压并使用 100nF 电容滤波
+| 部件 | 型号或说明 |
+| --- | --- |
+| 主控 | DFRobot FireBeetle 2 ESP32-S3 |
+| OLED | SSD1306，128×64，I2C |
+| 按键 | 8 个按键，按下接 GND，使用内部上拉 |
+| 模式开关 | SPDT 拨片开关 |
+| RGB | 8 颗 WS2812B |
+| 旋钮 | EC11 增量式编码器，带按压开关 |
+| 麦克风 | INMP441，I2S 数字麦克风 |
+| 电池检测 | 100K/100K 分压和 100nF 滤波电容 |
 
-## 接线
+## 引脚定义
 
-| 功能 | GPIO |
-|------|------|
-| OLED SDA | 10 |
-| OLED SCL | 9 |
-| K1（左方向键） | 18 |
-| K2（下方向键） | 17 |
-| K3（右方向键） | 16 |
-| K4（Enter） | 15 |
-| K5（Backspace） | 5 |
-| K6（上方向键） | 6 |
-| K7（Ctrl + Win） | 7 |
-| K8（Fn，固件内部功能键） | 4 |
-| WS2812B DIN | 8 |
-| EC11 A | 11 |
-| EC11 B | 12 |
-| EC11 按压 SW | 13 |
-| 模式选择（拨片公共端） | 38 |
-| 电池 ADC（100K/100K 分压中点） | 14 |
+| 功能 | GPIO | 说明 |
+| --- | ---: | --- |
+| OLED SDA | 10 | I2C 数据 |
+| OLED SCL | 9 | I2C 时钟 |
+| KEY1 | 18 | 默认：左方向键 |
+| KEY2 | 17 | 默认：下方向键 |
+| KEY3 | 16 | 默认：右方向键 |
+| KEY4 | 15 | 默认：Enter |
+| KEY5 | 5 | 默认：Backspace |
+| KEY6 | 6 | 默认：上方向键 |
+| KEY7 | 7 | 默认：Ctrl + Win |
+| KEY8 | 4 | Fn，固件内部功能键 |
+| WS2812B DIN | 8 | RGB 灯带数据 |
+| EC11 A | 11 | 旋钮 A 相 |
+| EC11 B | 12 | 旋钮 B 相 |
+| EC11 SW | 13 | 旋钮按键，按下接 GND |
+| INMP441 SD | 35 | I2S 数据输入 |
+| INMP441 SCK | 36 | I2S 位时钟 |
+| INMP441 WS | 37 | I2S 左右声道时钟 |
+| 模式选择 | 38 | GND 为 BLE，3.3V 为 USB |
+| 电池 ADC | 14 | 100K/100K 分压中点 |
 
-模式拨片的公共端连接 GPIO38，另外两端分别连接 GND 和 3.3V：
+INMP441 的 `L/R` 接 GND，电源和逻辑电平使用 3.3V。EC11 公共端 C、开关另一端
+和外壳固定脚接 GND。
 
-- GPIO38 接 GND：BLE 模式
-- GPIO38 接 3.3V：USB 模式
+### USB/BLE 模式开关
 
-固件会持续监测拨片状态，并在电平稳定 50ms 后自动切换模式，无需重启。切换时会先释放旧模式的全部按键，再关闭旧接口并启动新接口，避免按键卡住。请使用 SPDT 拨片开关，避免将 3.3V 与 GND 直接短接。
+拨片公共端连接 GPIO38，另外两端分别连接 GND 和 3.3V：
 
-## 功能
+- GPIO38 接 GND：BLE 模式。
+- GPIO38 接 3.3V：USB 模式。
 
-- USB/BLE 双模式 HID 键盘
-- EC11 顺时针音量加、逆时针音量减，按下一次播放/暂停；无需运行配套软件
-- GPIO38 拨片开关运行时自动切换模式，无需重启
-- USB 模式下使用 TinyUSB 检测主机枚举状态；未连接时 OLED 播放插头动画并显示 `PLUG IN USB`
-- 插入 USB 后自动恢复按键界面，拔出后自动重新显示连接提醒
-- BLE 设备名 `Vico Keyboard`
-- BLE HID 与 Windows 连接后继续广播，配套软件仍可发现并访问自定义 GATT 状态通道
-- USB 产品名 `Vico Keyboard`（VID/PID `3343:83CF`）
-- USB 复合 HID：标准键盘 Report + Vendor Report ID 6
-- OLED 数字孪生：按需回传 SSD1306 的 1024 字节真实帧，CRC32 校验
-- OLED 运行时页面：品牌、Coding、电脑性能、时钟日期、键盘状态和自定义像素画
-- 自定义像素画可由配套软件明确保存到独立 NVS 缓存，断开软件或设备重启后继续显示
-- 自定义像素画可通过 USB 或 BLE 分片传输，并在完整 CRC32 校验后显示
-- 软件状态可通过 USB Vendor HID 或自定义 BLE GATT 服务发送
-- `Fn + KEY6 / KEY7` 可向前或向后切换 OLED 页面
-- OLED 顶栏显示当前 USB、BLE 或 BLE 未连接状态
-- GPIO14 实时监测单节锂电池电压，OLED 显示实测电量；BLE Battery Service 与 USB Vendor HID 会同步上报给配套软件
-- 默认按键映射：`左、下、右、Enter、Backspace、上、Ctrl+Win、Fn`
-- 内置五套可编辑预设并保存到 NVS，断电后保留
-- 按住 Fn 再按 KEY1～KEY5，可直接切换 P1～P5；Fn 和选择键不会发送给电脑
-- USB Vendor HID 协议采用固定 5 字节按键定义、逐命令确认和 CRC32 原子提交
-- KEY4 + KEY8 打开板载设置菜单，菜单操作不会发送 HID 按键
-- 设置菜单可调整预设、OLED、RGB，并查看连接、按键测试和设备信息
-- OLED 亮度/休眠/数字孪生与 RGB 灯效/亮度/速度/开关保存到 NVS
-- OLED 默认页面和 Claude 自动覆盖设置保存到 NVS
-- 10ms 按键去抖
-- OLED 实时显示：标题栏、USB/BLE 模式、BLE 连接状态、2x4 按键网格（按下填充反转）、GPIO 映射
+固件持续监测拨片状态，电平稳定 50 ms 后自动切换。切换时会先释放当前接口的
+全部 HID 按键，再关闭旧接口并启动新接口，避免出现按键卡住。请使用 SPDT
+拨片开关，避免直接短接 3.3V 与 GND。
 
-## 旋钮操作
+## 默认按键和快捷操作
 
-旋钮公共端 C、开关另一端 E 和外壳固定脚接 GND。A/B 使用 CHANGE 中断记录
-正交相位，完整四相周期产生一次音量短按；SW 连续稳定 25ms 后开始语音输入，
-松开后停止采样并完成发送。旋钮操作会唤醒 OLED。设置菜单内、设备离线时不发送媒体事件，
-原八键中的媒体按键按住时优先保留原按键，避免共享 Consumer 通道互相释放。
-方向与参考 EC11 示例一致；实际装配若方向相反，可将 `rotary_encoder.h` 的
-`DIRECTION` 改为 `-1`。单步对应系统的一个音量增减动作，具体百分比由主机决定。
+| 操作 | 功能 |
+| --- | --- |
+| KEY1～KEY8 | 左、下、右、Enter、Backspace、上、Ctrl+Win、Fn |
+| Fn + KEY1～KEY5 | 切换 P1～P5 预设，组合键不会发送给电脑 |
+| Fn + KEY6 / KEY7 | 向前/向后切换 OLED 页面 |
+| KEY4 + KEY8 | 打开板载设置菜单 |
+| EC11 顺时针/逆时针 | 音量加/音量减 |
+| 按住 EC11 | 开始语音录音 |
+| 松开 EC11 | 停止录音并等待剩余音频发送完毕 |
 
-语音使用 16 kHz PCM16 环形缓冲实时发送，不依赖 PSRAM。USB 模式保持 32 KB，
-BLE 模式使用 128 KB 内部 RAM，以承受更长时间的蓝牙发送积压。录音与
-排空期间会释放并暂停普通 HID 按键，同时暂停 OLED、RGB、预设和电池等后台数据，
-把 USB Vendor HID 或 BLE GATT 带宽优先留给音频；传输完成或异常超时后自动恢复。
+物理按键使用 10 ms 去抖。EC11 使用 A/B 相 CHANGE 中断记录正交状态，一个完整
+四相周期产生一次音量动作；按压开关连续稳定 25 ms 后才会开始语音会话。实际装配
+后如果旋转方向相反，可把 `src/rotary_encoder.h` 中的 `DIRECTION` 改为 `-1`。
+
+## USB 与蓝牙通信
+
+### USB 模式
+
+- USB 产品名：`Vico Keyboard`。
+- 当前板级 VID/PID：`3343:83CF`。
+- 标准键盘/Consumer HID 负责按键和媒体控制。
+- Vendor Report ID 6 负责配套软件的配置、OLED、RGB、状态和语音数据。
+- TinyUSB 会检测主机是否完成枚举；未连接时 OLED 显示 `PLUG IN USB` 动画。
+
+### BLE 模式
+
+- 蓝牙设备名：`Vico Keyboard`。
+- BLE HID 负责键盘和媒体控制。
+- BLE Battery Service 上报当前估算电量。
+- 自定义 GATT 服务负责配套软件配置、状态、OLED 图像和语音数据。
+- HID 已连接后固件仍保持可发现能力，使配套软件能够建立自定义 GATT 连接。
+
+## 语音输入流程
+
+语音识别不是在 ESP32-S3 上运行。固件只负责采集和传输，配套软件负责组装音频、
+调用用户配置的云端语音识别 API，并把识别结果输入到当前文本框。
+
+1. 配套软件先通过 USB Vendor HID 或 BLE GATT 完成语音能力握手。
+2. 用户按住 EC11，固件确认传输端已就绪后启动 INMP441。
+3. 麦克风以 16 kHz、16 bit、单声道 PCM 格式持续采样。
+4. 固件边采样边发送；USB 使用 32 KB 环形缓冲，BLE 使用 128 KB 内部 RAM
+   环形缓冲，以承受蓝牙吞吐量较低时产生的积压。
+5. 用户松开 EC11 后停止采样，固件继续排空缓冲区并发送会话结束标记。
+6. 配套软件收到完整音频后调用云端模型并输出识别文本。
+
+录音、排空和错误提示期间，语音任务具有最高优先级。固件会释放并暂停普通 HID
+按键，同时暂停 OLED 常规刷新、RGB、预设和电池等后台同步，把当前 USB/BLE
+数据通道优先留给音频；传输完成或异常超时后自动恢复。语音缓冲位于内部 RAM，
+不依赖 PSRAM。
+
+如果未运行配套软件、自定义数据通道未连接或语音握手尚未完成，按下旋钮不会开始
+有效录音，OLED 会显示相应的传输错误状态。
+
+## OLED
+
+固件提供以下运行时页面：
+
+- 品牌页面。
+- Claude Code/Coding 状态。
+- CPU、GPU 等电脑性能信息。
+- 时间与日期。
+- 键盘、连接与按键状态。
+- 自定义 128×64 单色像素画。
+
+页面内容可以通过 USB Vendor HID 或 BLE GATT 更新。自定义像素画以分片方式传输，
+完整数据通过 CRC32 校验后才会显示；用户在软件中执行“保存到键盘”后，图像会写入
+独立 NVS 缓存，软件断开或键盘重启后仍可显示。
+
+数字孪生功能按需回传 SSD1306 的 1024 字节真实帧缓冲并附带 CRC32。软件看到的
+内容与物理 OLED 使用同一份像素数据，不会占用按键扫描的实时路径。
+
+## 板载设置菜单
+
+| 操作 | 功能 |
+| --- | --- |
+| KEY4 + KEY8 | 进入设置 |
+| KEY6 | 向上 |
+| KEY2 | 向下 |
+| KEY4 | 确认 |
+| KEY5 | 返回 |
+| KEY8 | 退出设置 |
+
+菜单包含 `PROFILE`、`OLED`、`RGB LIGHT`、`CONNECTION`、`KEY TEST`、
+`DEVICE INFO`、`FACTORY RESET` 和 `EXIT`。菜单操作不会发送 HID 按键。
+USB/BLE 模式始终由 GPIO38 硬件拨片决定，菜单只能查看连接状态，不能覆盖拨片。
 
 ## 电池监测与校准
 
-电池采样电路应为 `VBAT -> 100K -> GPIO14 -> 100K -> GND`，并在 GPIO14 与 GND
-之间连接 100nF 电容。固件每 250ms 采样一次，对 4 次 ADC 读数取平均后再进行
-指数平滑，并按单节锂电池的分段放电曲线换算为 0～100%。标称换算关系为：
+采样电路应连接为：
+
+```text
+VBAT -> 100K -> GPIO14 -> 100K -> GND
+                    |
+                  100nF
+                    |
+                   GND
+```
+
+固件每 250 ms 采样一次，对 4 次 ADC 读数取平均后进行指数平滑，再按单节锂电池
+分段放电曲线换算为 0～100%。标称关系为：
 
 ```text
 VBAT(mV) = analogReadMilliVolts(GPIO14) × 2
 ```
 
-由于 ESP32-S3 ADC 与 100K 电阻都存在误差，首次装机建议用万用表同时测量电池
-实际电压。如果 OLED 电压与万用表不一致，可修改
-`src/battery_monitor.cpp` 中的 `CALIBRATION_PERMILLE`：
+ESP32-S3 ADC 和分压电阻都有误差。首次装机建议用万用表同时测量电池实际电压；
+如果 OLED 与万用表不一致，可调整 `src/battery_monitor.cpp` 中的
+`CALIBRATION_PERMILLE`：
 
 ```text
-新校准值 = 当前校准值 × 万用表电压 / OLED显示电压
+新校准值 = 当前校准值 × 万用表电压 / OLED 显示电压
 ```
 
-例如万用表为 4000mV、OLED 为 3920mV，则可将 `1000` 调整为约 `1020`。
-当前电路只能判断电池电压和估算电量，不能可靠判断“正在充电”；如需充电图标，
-应再连接充电芯片的状态引脚。
+例如万用表为 4000 mV、OLED 为 3920 mV，可将 `1000` 调整为约 `1020`。
+当前硬件只能测量电压并估算剩余电量，无法可靠判断是否正在充电；如需充电状态，
+应额外连接充电管理芯片的状态引脚。
 
-## 板载设置菜单
+## 配置持久化
 
-- `KEY4 + KEY8`：进入设置
-- `KEY6`：向上
-- `KEY2`：向下
-- `KEY4`：确认
-- `KEY5`：返回
-- `KEY8`：退出设置
+以下内容会保存到 ESP32 NVS，断电后保留：
 
-菜单包含 `PROFILE`、`OLED`、`RGB LIGHT`、`CONNECTION`、`KEY TEST`、`DEVICE INFO`、`FACTORY RESET` 和 `EXIT`。USB/BLE 模式仍由 GPIO38 硬件拨片决定，菜单只显示连接状态，不会覆盖拨片。
+- 五套按键预设及当前预设。
+- OLED 默认页面、亮度、休眠和 Claude 自动覆盖设置。
+- RGB 模式、颜色、亮度、速度和总开关。
+- 已明确保存到键盘的自定义像素画。
 
-## 依赖库
+按键预设采用固定 5 字节按键定义、逐命令确认和 CRC32 原子提交，避免同步中断后
+留下半套配置。
 
-- [Adafruit SSD1306](https://github.com/adafruit/Adafruit_SSD1306) ^2.5.7
-- [Adafruit GFX Library](https://github.com/adafruit/Adafruit-GFX-Library) ^1.11.5
-- [NimBLE-Arduino](https://github.com/h2zero/NimBLE-Arduino) ^2.1.0
-- [ESP32 NIMBLE Keyboard](https://github.com/Berg0162/ESP32-NIMBLE-Keyboard) v2.0.1（已内置在 `lib/ESP32-NIMBLE-Keyboard`）
-- ESP32 Arduino Core 自带的 `USB` 和 `USBHIDKeyboard`
+## 开发环境
 
-## 构建
+- [PlatformIO](https://platformio.org/)
+- Arduino Framework for ESP32
+- C++17
+
+`platformio.ini` 声明的主要依赖：
+
+- [Adafruit SSD1306](https://github.com/adafruit/Adafruit_SSD1306) `^2.5.7`
+- [Adafruit GFX Library](https://github.com/adafruit/Adafruit-GFX-Library) `^1.11.5`
+- [NimBLE-Arduino](https://github.com/h2zero/NimBLE-Arduino) `^2.1.0`
+- [ESP32 NIMBLE Keyboard](https://github.com/Berg0162/ESP32-NIMBLE-Keyboard)
+  `v2.0.1`，已放在 `lib/ESP32-NIMBLE-Keyboard`
+
+项目使用 NimBLE 以降低 BLE 的 RAM 和 Flash 占用。本地已经包含修改过的键盘库，
+因此 PlatformIO 不会再从 GitHub 下载另一份 BLE Keyboard 实现。
+
+## 构建与烧录
+
+克隆项目：
+
+```bash
+git clone git@github.com:Apezer/ESP32S3-Vico-Keyboard.git
+cd ESP32S3-Vico-Keyboard
+```
+
+编译：
 
 ```bash
 pio run
 ```
 
-## NimBLE 说明
+连接开发板后烧录：
 
-项目已从传统 ESP32 BLE Keyboard 库切换到 NimBLE 版本，以降低 RAM 和 Flash 占用。
+```bash
+pio run --target upload
+```
 
-当前使用 `NimBleKeyboard.h` 头文件，代码仍保持原来的 `BleKeyboard bleKeyboard;` 风格。
+如电脑连接了多个串口，可在 `platformio.ini` 中设置 `upload_port`，或在命令行指定：
 
-键盘库已复制到项目本地 `lib/ESP32-NIMBLE-Keyboard`，因此不需要在 `platformio.ini` 中从 GitHub 下载该库。
+```bash
+pio run --target upload --upload-port COMx
+```
 
 ## 项目结构
 
-```
-├── platformio.ini          # PlatformIO 构建配置
+```text
+├── platformio.ini             # PlatformIO 环境、依赖与 USB 编译参数
 ├── src/
-│   ├── main.cpp            # 主程序（USB/BLE 键盘 + OLED 显示）
-│   ├── key_profiles.*      # 五套按键预设、CRC 与 NVS
-│   ├── device_settings.*   # OLED/RGB 设置与 NVS
-│   ├── battery_monitor.*   # GPIO14 电池采样、滤波和电量估算
-│   ├── rbg_led.*           # WS2812B 灯效
-│   ├── font.h              # 字模 + Claude Logo 声明
-│   └── font.c              # 字模 + Claude Logo 数据
+│   ├── main.cpp               # 主循环、模式切换、HID、菜单和 OLED 绘制
+│   ├── key_profiles.*         # 五套按键预设、CRC32 提交与 NVS
+│   ├── device_settings.*      # OLED/RGB 设置及 NVS
+│   ├── battery_monitor.*      # GPIO14 采样、滤波、电压和电量换算
+│   ├── rotary_encoder.*       # EC11 正交解码和按键去抖
+│   ├── voice_capture.*        # INMP441 I2S 采集、环形缓冲和语音会话
+│   ├── oled_runtime.*         # 配套软件状态、页面数据和 BLE GATT 协议
+│   ├── oled_twin.*            # USB Vendor HID、数字孪生和分片传输
+│   ├── rbg_led.*              # WS2812B 灯效及设置应用
+│   ├── font.h
+│   └── font.c                 # OLED 字模和 Claude 图标数据
 └── lib/
-    └── ESP32-NIMBLE-Keyboard # 本地内置的 NimBLE 键盘库
+    ├── ESP32-NIMBLE-Keyboard/ # 本地 BLE HID 键盘库
+    └── FastLED_min/           # 精简 WS2812B 驱动
 ```
+
+## 相关项目
+
+- 固件仓库：[Apezer/ESP32S3-Vico-Keyboard](https://github.com/Apezer/ESP32S3-Vico-Keyboard)
+- 配套软件：[Apezer/vico-deck](https://github.com/Apezer/vico-deck)
