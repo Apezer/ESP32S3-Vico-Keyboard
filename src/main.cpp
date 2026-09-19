@@ -52,6 +52,7 @@
 #include "key_profiles.h"
 #include "oled_runtime.h"
 #include "oled_twin.h"
+#include "power_manager.h"
 #include "rbg_led.h"
 #include "rotary_encoder.h"
 #include "voice_capture.h"
@@ -108,6 +109,11 @@ static uint8_t usb_prompt_frame = 0;
 static unsigned long usb_prompt_frame_at = 0;
 static unsigned long last_user_activity_at = 0;
 static bool oled_sleeping = false;
+// 15～30 秒空闲阶段仅关闭高耗电外设，BLE HID/GATT 协议栈继续运行。
+// 这里不使用 esp_light_sleep_start()，否则控制器无法可靠维持现有连接。
+static bool ble_idle_active = false;
+// 深睡唤醒按键只负责启动设备，必须等全部释放后才恢复正常 HID 扫描。
+static bool sleep_wake_suppress_keys_until_release = false;
 // 旋钮旋转使用媒体键短按状态机；旋钮按压边沿由语音会话单独处理。
 static ConsumerAction encoderMediaAction = ConsumerAction::NONE;
 static int8_t encoderVolumeSteps = 0;
@@ -144,6 +150,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 OledRuntime oledRuntime;
 BatteryMonitor batteryMonitor;
 VoiceCapture voiceCapture;
+PowerManager powerManager;
 
 /** @brief 在标准 BLE HID 服务启动阶段追加 Vico OLED 状态 GATT 服务。 */
 class VicoBleKeyboard : public BleKeyboard {
@@ -192,7 +199,17 @@ void commitOledFrame() {
 }
 
 void wakeOled() {
-    last_user_activity_at = millis();
+    const uint32_t now = millis();
+    last_user_activity_at = now;
+    powerManager.noteActivity(now);
+
+    // 用户按键、旋钮或桌面端设置都视为有效活动。退出 BLE 空闲态时恢复
+    // 用户保存的 RGB 配置；若用户本来选择了“关闭”，灯带仍会保持关闭。
+    if (ble_idle_active) {
+        ble_idle_active = false;
+        applyRgbSettings();
+    }
+
     if (!oled_sleeping) return;
     display.ssd1306_command(SSD1306_DISPLAYON);
     oled_sleeping = false;
@@ -277,6 +294,7 @@ void switchKeyboardMode(KeyboardMode next_mode) {
     keyboard_mode = next_mode;
     resetKeyTracking();
     startKeyboardInterface(keyboard_mode);
+    wakeOled();
 
     Serial.printf(
         "Keyboard mode switched to %s\n",
@@ -368,6 +386,68 @@ void releaseAllHid() {
     } else if (bleKeyboard.isConnected()) {
         bleKeyboard.releaseAll();
     }
+}
+
+// =============================================================================
+// BLE 电池模式低功耗管理
+// =============================================================================
+
+/** @brief 返回是否有会让低电平唤醒立即触发的物理输入。 */
+bool anySleepWakeInputPressed() {
+    for (uint8_t index = 0; index < NUM_KEYS; ++index) {
+        if (digitalRead(KEY_PINS[index]) == LOW) return true;
+    }
+    return digitalRead(RotaryEncoder::PIN_SWITCH) == LOW;
+}
+
+/** @brief 进入保持 BLE 连接的低功耗空闲态。 */
+void enterBleConnectedIdle() {
+    if (ble_idle_active) return;
+
+    releaseAllHid();
+    rbgLedSetEnabled(false);
+    display.ssd1306_command(SSD1306_DISPLAYOFF);
+    oled_sleeping = true;
+    RotaryEncoder::discard();
+    ble_idle_active = true;
+}
+
+/** @brief 深睡前关闭显示、RGB 和 BLE，避免协议栈在休眠入口继续工作。 */
+void suspendForDeepSleep() {
+    releaseAllHid();
+    rbgLedSetEnabled(false);
+    display.ssd1306_command(SSD1306_DISPLAYOFF);
+    oled_sleeping = true;
+    stopKeyboardInterface(KeyboardMode::BLE);
+    RotaryEncoder::discard();
+}
+
+/** @brief 关闭 BLE 外设并进入只能由按键或旋钮按压唤醒的深度睡眠。 */
+[[noreturn]] void enterDeepPowerSleep(bool bleAlreadySuspended = false) {
+    if (!bleAlreadySuspended) suspendForDeepSleep();
+
+    uint64_t wakeMask = 1ULL << RotaryEncoder::PIN_SWITCH;
+    for (uint8_t index = 0; index < NUM_KEYS; ++index) {
+        wakeMask |= 1ULL << KEY_PINS[index];
+    }
+    powerManager.enterDeepSleep(wakeMask);
+}
+
+/**
+ * @brief 在 BLE 模式达到门限时执行分级节能。
+ *
+ * 15～30 秒阶段保持 BLE HID/GATT 在线，只关闭 OLED 与 RGB。显式 Light-sleep
+ * 会暂停当前 Arduino/NimBLE 控制器，无法可靠保持连接，因此这里使用可立即恢复
+ * 的连接空闲态。累计空闲 30 秒后才关闭 BLE 并进入真正的 Deep-sleep。
+ */
+void updatePowerSaving(uint32_t now) {
+    if (keyboard_mode != KeyboardMode::BLE || settingsMenu.active ||
+        voiceCapture.active() || anySleepWakeInputPressed()) {
+        return;
+    }
+
+    if (powerManager.deepSleepDue(now)) enterDeepPowerSleep();
+    if (powerManager.lightSleepDue(now)) enterBleConnectedIdle();
 }
 
 void pressModifiers(uint8_t modifiers) {
@@ -1350,6 +1430,8 @@ void setup() {
     );
     applyOledSettings();
     last_user_activity_at = millis();
+    powerManager.noteActivity(last_user_activity_at);
+    powerManager.begin(last_user_activity_at);
 
     // 在键盘接口启动前加载五套可编辑预设。
     keyProfiles.begin();
@@ -1380,6 +1462,9 @@ void setup() {
     // 跳过 Claude Code 开机画面，直接显示键盘状态。
     renderKeyStatus();
     display_dirty = false;
+
+    // 深睡唤醒的按键只负责启动设备；全部释放后才允许发送新的 HID 输入。
+    sleep_wake_suppress_keys_until_release = PowerManager::wokeFromDeepSleep();
 }
 
 // =============================================================================
@@ -1458,6 +1543,17 @@ void loop() {
         changed = false;
     }
 
+    if (sleep_wake_suppress_keys_until_release) {
+        bool anyPressed = false;
+        for (uint8_t i = 0; i < NUM_KEYS; ++i) {
+            anyPressed |= key_state[i];
+            last_reported[i] = key_state[i];
+        }
+        anyPressed |= digitalRead(RotaryEncoder::PIN_SWITCH) == LOW;
+        if (!anyPressed) sleep_wake_suppress_keys_until_release = false;
+        changed = false;
+    }
+
     if (changed) wakeOled();
 
     // KEY4 + KEY8 是物理系统组合键，不受用户映射影响。
@@ -1519,6 +1615,7 @@ void loop() {
     OledPage changedPage = OledPage::BRAND;
     bool changedAutoClaude = true;
     if (oledRuntime.takeSettingsChange(changedPage, changedAutoClaude)) {
+        wakeOled();
         auto &settings = deviceSettings.edit();
         settings.oledPage = static_cast<uint8_t>(changedPage);
         settings.oledAutoClaude = changedAutoClaude;
@@ -1533,6 +1630,7 @@ void loop() {
     static uint32_t rgbSettingsChangedAt = 0;
     RgbRuntimeSettings changedRgb = {};
     if (oledRuntime.takeRgbSettingsChange(changedRgb)) {
+        wakeOled();
         auto &settings = deviceSettings.edit();
         settings.rgbEffect = changedRgb.effect;
         settings.rgbBrightness = changedRgb.brightness;
@@ -1561,6 +1659,20 @@ void loop() {
         }
     }
 
+    // USB 由外部供电，永远不会进入此分支；当前测试参数为 BLE 空闲
+    // 15 秒进入保持 GATT 的连接空闲态、累计 30 秒进入深睡。
+    // 前面的 GATT/USB 设置处理可能已经刷新活动时间，因此这里重新读取时钟。
+    now = millis();
+    updatePowerSaving(now);
+    now = millis();
+
+    // 连接空闲态仍需持续运行主循环，以便 NimBLE 维持 HID/GATT 并接收桌面端
+    // 指令。跳过 OLED 绘制和动画，短暂让出 CPU，下一轮仍会扫描按键与旋钮。
+    if (ble_idle_active) {
+        delay(10);
+        return;
+    }
+
     // 蓝牙未连接时定期刷新界面。
     if (keyboard_mode == KeyboardMode::BLE && !bleKeyboard.isConnected() &&
         !settingsMenu.active) {
@@ -1583,6 +1695,7 @@ void loop() {
     oledTwin.update(keyboard_mode == KeyboardMode::USB && usb_mounted);
 
     if (oledTwin.takeProfileChanged()) {
+        wakeOled();
         releaseAllHid();
         resetKeyTracking();
         profile_notice_until = millis() + 900;

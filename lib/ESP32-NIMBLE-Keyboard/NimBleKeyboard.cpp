@@ -95,7 +95,10 @@ void BleKeyboard::begin(void)
   // 为 Vico 语音通知预留较大的 ATT 载荷；对端不支持时会自动协商为较小值。
   NimBLEDevice::setMTU(247);
   NimBLEServer* pServer = NimBLEDevice::createServer();
-  pServer->setCallbacks(this);
+  // BleKeyboard 由应用以全局对象持有，不是通过 new 创建的。回调所有权必须
+  // 保留在应用侧，否则 NimBLEDevice::deinit(true) 销毁 Server 时会 delete
+  // 这个指针，造成 heap_caps_free 断言并让设备在进入睡眠时重启。
+  pServer->setCallbacks(this, false);
   // Set server auto-restart advertise on
   pServer->advertiseOnDisconnect(true);
 
