@@ -109,7 +109,7 @@ static uint8_t usb_prompt_frame = 0;
 static unsigned long usb_prompt_frame_at = 0;
 static unsigned long last_user_activity_at = 0;
 static bool oled_sleeping = false;
-// 15～30 秒空闲阶段仅关闭高耗电外设，BLE HID/GATT 协议栈继续运行。
+// 10～20 分钟空闲阶段仅关闭高耗电外设，BLE HID/GATT 协议栈继续运行。
 // 这里不使用 esp_light_sleep_start()，否则控制器无法可靠维持现有连接。
 static bool ble_idle_active = false;
 // 深睡唤醒按键只负责启动设备，必须等全部释放后才恢复正常 HID 扫描。
@@ -436,9 +436,9 @@ void suspendForDeepSleep() {
 /**
  * @brief 在 BLE 模式达到门限时执行分级节能。
  *
- * 15～30 秒阶段保持 BLE HID/GATT 在线，只关闭 OLED 与 RGB。显式 Light-sleep
+ * 10～20 分钟阶段保持 BLE HID/GATT 在线，只关闭 OLED 与 RGB。显式 Light-sleep
  * 会暂停当前 Arduino/NimBLE 控制器，无法可靠保持连接，因此这里使用可立即恢复
- * 的连接空闲态。累计空闲 30 秒后才关闭 BLE 并进入真正的 Deep-sleep。
+ * 的连接空闲态。累计空闲 20 分钟后才关闭 BLE 并进入真正的 Deep-sleep。
  */
 void updatePowerSaving(uint32_t now) {
     if (keyboard_mode != KeyboardMode::BLE || settingsMenu.active ||
@@ -1659,8 +1659,8 @@ void loop() {
         }
     }
 
-    // USB 由外部供电，永远不会进入此分支；当前测试参数为 BLE 空闲
-    // 15 秒进入保持 GATT 的连接空闲态、累计 30 秒进入深睡。
+    // USB 由外部供电，永远不会进入此分支；BLE 空闲 10 分钟进入保持
+    // GATT 的连接空闲态，累计空闲 20 分钟进入深度睡眠。
     // 前面的 GATT/USB 设置处理可能已经刷新活动时间，因此这里重新读取时钟。
     now = millis();
     updatePowerSaving(now);
