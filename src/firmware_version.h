@@ -14,7 +14,7 @@ namespace VicoFirmwareVersion {
 
 constexpr uint8_t MAJOR = 1;
 constexpr uint8_t MINOR = 0;
-constexpr uint8_t PATCH = 1;
-constexpr const char *TEXT = "1.0.1";
+constexpr uint8_t PATCH = 2;
+constexpr const char *TEXT = "1.0.2";
 
 }  // namespace VicoFirmwareVersion

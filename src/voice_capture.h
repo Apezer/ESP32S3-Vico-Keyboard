@@ -4,8 +4,8 @@
  * @file voice_capture.h
  * @brief INMP441 流式采集和语音传输协议。
  *
- * 音频采用 16 kHz、16 bit、单声道 PCM。USB 使用 32 KB 环形缓冲，
- * BLE 使用 128 KB 环形缓冲；录音期间一边采样一边发送。
+ * 音频采用 16 kHz、16 bit、单声道 PCM。USB 使用内部 RAM 中的 32 KB
+ * 环形缓冲，BLE 使用 PSRAM 中的 512 KB 环形缓冲；录音期间一边采样一边发送。
  */
 
 #include <Arduino.h>
@@ -39,6 +39,7 @@ public:
         MICROPHONE_UNAVAILABLE = 1,
         BUFFER_OVERFLOW = 2,
         TRANSPORT_UNAVAILABLE = 3,
+        MEMORY_UNAVAILABLE = 4,
     };
 
     /** @brief 准备录音模块；I2S 驱动延迟到第一次录音时安装。 */
@@ -47,7 +48,7 @@ public:
      * @brief 旋钮按下时开始新的独占语音会话。
      * @param now 当前毫秒计数。
      * @param transportReady USB/BLE 接收端是否已就绪。
-     * @param useBleBuffer BLE 模式传 true，启用完整 128 KB 缓冲。
+     * @param useBleBuffer BLE 模式传 true，启用 PSRAM 中的 512 KB 缓冲。
      */
     bool start(uint32_t now, bool transportReady, bool useBleBuffer);
     /** @brief 旋钮松开时停止采样，并排空仍在缓冲区中的音频。 */
@@ -78,14 +79,17 @@ private:
     static constexpr uint8_t MIC_SCK_PIN = 40;
     static constexpr uint8_t MIC_WS_PIN = 41;
     static constexpr size_t USB_RING_BYTES = 32 * 1024;
-    static constexpr size_t BLE_RING_BYTES = 128 * 1024;
+    static constexpr size_t BLE_RING_BYTES = 512 * 1024;
     static constexpr size_t CHUNK_HEADER_BYTES = 9;
 
     State state_ = State::IDLE;
     ErrorCode error_ = ErrorCode::MICROPHONE_UNAVAILABLE;
     bool microphoneReady_ = false;
-    // 只保留一块物理缓冲区；USB 模式限制其有效范围，避免维护两份队列。
-    uint8_t ring_[BLE_RING_BYTES] = {};
+    // I2S DMA 必须留在内部 RAM；这里只把 BLE 软件队列放入 PSRAM。
+    // BLE 缓冲在首次使用时分配并持续复用，避免反复申请造成内存碎片。
+    uint8_t usbRing_[USB_RING_BYTES] = {};
+    uint8_t *bleRing_ = nullptr;
+    uint8_t *activeRing_ = usbRing_;
     size_t activeRingBytes_ = USB_RING_BYTES;
     size_t readOffset_ = 0;
     size_t writeOffset_ = 0;
@@ -102,6 +106,8 @@ private:
     bool displayDirty_ = false;
 
     bool ensureMicrophone();
+    bool ensureBleRing();
+    bool selectRing(bool useBleBuffer);
     bool enqueueSample(int16_t sample);
     void finishCapture(uint32_t now);
     void resetStream();
