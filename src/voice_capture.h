@@ -74,9 +74,9 @@ public:
     bool takeDisplayDirty();
 
 private:
-    static constexpr uint8_t MIC_SD_PIN = 35;
-    static constexpr uint8_t MIC_SCK_PIN = 36;
-    static constexpr uint8_t MIC_WS_PIN = 37;
+    static constexpr uint8_t MIC_SD_PIN = 39;
+    static constexpr uint8_t MIC_SCK_PIN = 40;
+    static constexpr uint8_t MIC_WS_PIN = 41;
     static constexpr size_t USB_RING_BYTES = 32 * 1024;
     static constexpr size_t BLE_RING_BYTES = 128 * 1024;
     static constexpr size_t CHUNK_HEADER_BYTES = 9;

@@ -4,6 +4,7 @@
  */
 
 #include "oled_twin.h"
+#include "firmware_version.h"
 
 #include <cstring>
 #include "tusb.h"
@@ -16,9 +17,6 @@ constexpr uint8_t PROTOCOL_VERSION = 2;
 constexpr uint8_t DISPLAY_WIDTH = 128;
 constexpr uint8_t DISPLAY_HEIGHT = 64;
 constexpr uint8_t SSD1306_PAGE_LAYOUT = 1;
-constexpr uint8_t FIRMWARE_VERSION_MAJOR = 0;
-constexpr uint8_t FIRMWARE_VERSION_MINOR = 8;
-constexpr uint8_t FIRMWARE_VERSION_PATCH = 0;
 }
 
 // =============================================================================
@@ -239,9 +237,9 @@ void OledTwinTransport::queueHelloAck() {
         DISPLAY_WIDTH,
         DISPLAY_HEIGHT,
         SSD1306_PAGE_LAYOUT,
-        FIRMWARE_VERSION_MAJOR,
-        FIRMWARE_VERSION_MINOR,
-        FIRMWARE_VERSION_PATCH,
+        VicoFirmwareVersion::MAJOR,
+        VicoFirmwareVersion::MINOR,
+        VicoFirmwareVersion::PATCH,
         'V', 'I', 'C', 'O',
         VICO_PROFILE_COUNT,
         static_cast<uint8_t>(profiles_ != nullptr ? profiles_->activeProfile() : 0),

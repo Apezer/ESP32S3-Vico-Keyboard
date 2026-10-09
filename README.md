@@ -1,5 +1,7 @@
 # ESP32-S3 Vico Keyboard Firmware
 
+> 当前正式版本：**1.0.1**
+
 Vico Keyboard 是一款基于 DFRobot FireBeetle 2 ESP32-S3 的 8 键可编程小键盘。
 固件同时支持 USB HID 与 BLE HID，可驱动 128×64 OLED、8 颗 WS2812B、EC11
 旋钮、INMP441 数字麦克风和电池电量检测，并通过专用数据通道与
@@ -50,9 +52,9 @@ Vico Keyboard 是一款基于 DFRobot FireBeetle 2 ESP32-S3 的 8 键可编程�
 | EC11 A | 11 | 旋钮 A 相 |
 | EC11 B | 12 | 旋钮 B 相 |
 | EC11 SW | 13 | 旋钮按键，按下接 GND |
-| INMP441 SD | 35 | I2S 数据输入 |
-| INMP441 SCK | 36 | I2S 位时钟 |
-| INMP441 WS | 37 | I2S 左右声道时钟 |
+| INMP441 SD | 39 | I2S 数据输入 |
+| INMP441 SCK | 40 | I2S 位时钟 |
+| INMP441 WS | 41 | I2S 左右声道时钟 |
 | 模式选择 | 38 | GND 为 BLE，3.3V 为 USB |
 | 电池 ADC | 14 | 100K/100K 分压中点 |
 
