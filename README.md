@@ -17,7 +17,7 @@
   <a href="#引脚定义">引脚定义</a> ·
   <a href="#构建与烧录">构建与烧录</a> ·
   <a href="https://github.com/Apezer/vico-deck">VicoDeck 配套软件</a> ·
-  <a href="http://vico.zheng2005.xyz/">官方网站</a>
+  <a href="https://www.vicovico.xyz/">官方网站</a>
 </p>
 
 </div>
@@ -319,6 +319,6 @@ pio run --target upload --upload-port COMx
 
 ## 相关项目
 
-- 官方网站：[Vico Keyboard](http://vico.zheng2005.xyz/)
+- 官方网站：[Vico Keyboard](https://www.vicovico.xyz/)
 - 固件仓库：[Apezer/ESP32S3-Vico-Keyboard](https://github.com/Apezer/ESP32S3-Vico-Keyboard)
 - 配套软件：[Apezer/vico-deck](https://github.com/Apezer/vico-deck)
