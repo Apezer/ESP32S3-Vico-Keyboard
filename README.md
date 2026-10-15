@@ -1,11 +1,47 @@
-# ESP32-S3 Vico Keyboard Firmware
+<div align="center">
+
+<h1>Vico Keyboard Firmware</h1>
+
+<p>面向 Vibe Coding、快捷操作与桌面效率场景的 ESP32-S3 可编程机械小键盘固件</p>
+
+<p>
+  <img alt="Firmware 1.0.2" src="https://img.shields.io/badge/firmware-1.0.2-b6ff2e?style=flat-square&labelColor=161b22" />
+  <img alt="ESP32-S3" src="https://img.shields.io/badge/MCU-ESP32--S3-e7352c?style=flat-square&labelColor=161b22" />
+  <img alt="Arduino" src="https://img.shields.io/badge/framework-Arduino-00979d?style=flat-square&labelColor=161b22" />
+  <img alt="USB and BLE" src="https://img.shields.io/badge/mode-USB%20%7C%20BLE-3b82f6?style=flat-square&labelColor=161b22" />
+</p>
+
+<p>
+  <a href="#主要功能">主要功能</a> ·
+  <a href="#硬件">硬件配置</a> ·
+  <a href="#引脚定义">引脚定义</a> ·
+  <a href="#构建与烧录">构建与烧录</a> ·
+  <a href="https://github.com/Apezer/vico-deck">VicoDeck 配套软件</a>
+</p>
+
+</div>
 
 > 当前正式版本：**1.0.2**
 
-Vico Keyboard 是一款基于 DFRobot FireBeetle 2 ESP32-S3 的 8 键可编程小键盘。
-固件同时支持 USB HID 与 BLE HID，可驱动 128×64 OLED、8 颗 WS2812B、EC11
-旋钮、INMP441 数字麦克风和电池电量检测，并通过专用数据通道与
-[Vico Deck 配套软件](https://github.com/Apezer/vico-deck)双向同步。
+Vico Keyboard 是一款基于 DFRobot FireBeetle 2 ESP32-S3 的 8 键可编程机械小键盘。
+它同时支持 USB HID 与 BLE HID，可驱动 128×64 OLED、8 颗 WS2812B、EC11 旋钮、
+INMP441 数字麦克风和电池电量检测，并通过专用数据通道与
+[VicoDeck 配套软件](https://github.com/Apezer/vico-deck)双向同步按键预设、OLED、RGB、
+设备状态和语音数据。
+
+## 实物展示
+
+<p align="center">
+  <img src="docs/images/vico-keyboard-family.png" alt="三台 Vico Keyboard 实物与 RGB 灯光效果" width="100%" />
+</p>
+
+<p align="center"><sub>多台 Vico Keyboard 成品：不同键帽配置、OLED 页面与 RGB 灯效</sub></p>
+
+<p align="center">
+  <img src="docs/images/vico-keyboard-closeup.png" alt="Vico Keyboard 正面实物细节" width="86%" />
+</p>
+
+<p align="center"><sub>正面细节：128×64 OLED、八个机械按键、EC11 旋钮和轴下 RGB</sub></p>
 
 ## 主要功能
 
