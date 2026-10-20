@@ -36,6 +36,8 @@ void rbgLedNextEffect();
 /** @brief 设置灯效编号；越界值会被规范化。 */
 void rbgLedSetEffect(uint8_t effect);
 uint8_t rbgLedGetEffect();
+/** @brief 返回指定灯效编号的显示名称；越界时返回 Unknown。 */
+const char *rbgLedEffectName(uint8_t effect);
 const char *rbgLedGetEffectName();
 /** @brief 设置全局亮度百分比，内部限制在安全范围。 */
 void rbgLedSetBrightness(uint8_t percent);

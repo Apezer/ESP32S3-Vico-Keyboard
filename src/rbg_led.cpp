@@ -301,10 +301,11 @@ uint8_t rbgLedGetEffect() {
 }
 
 const char *rbgLedGetEffectName() {
-    if (current_effect < RBG_EFFECT_COUNT) {
-        return EFFECT_NAMES[current_effect];
-    }
-    return "Unknown";
+    return rbgLedEffectName(current_effect);
+}
+
+const char *rbgLedEffectName(uint8_t effect) {
+    return effect < RBG_EFFECT_COUNT ? EFFECT_NAMES[effect] : "Unknown";
 }
 
 void rbgLedSetBrightness(uint8_t percent) {

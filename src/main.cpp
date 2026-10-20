@@ -128,12 +128,16 @@ enum class SettingsScreen : uint8_t {
     MAIN,
     PROFILE,
     OLED,
+    OLED_PAGE,
     RGB,
+    RGB_EFFECT,
     CONNECTION,
     KEY_TEST,
     DEVICE_INFO,
     FACTORY_RESET,
 };
+
+constexpr uint8_t OLED_PAGE_COUNT = 6;
 
 /** @brief 设置菜单导航状态；waitForRelease 防止入菜单组合键被重复消费。 */
 struct SettingsMenuState {
@@ -789,7 +793,9 @@ uint8_t settingsItemCount(SettingsScreen screen) {
         case SettingsScreen::MAIN: return 8;
         case SettingsScreen::PROFILE: return 6;
         case SettingsScreen::OLED: return 6;
+        case SettingsScreen::OLED_PAGE: return OLED_PAGE_COUNT + 1;
         case SettingsScreen::RGB: return 5;
+        case SettingsScreen::RGB_EFFECT: return RBG_EFFECT_COUNT + 1;
         case SettingsScreen::CONNECTION: return 4;
         case SettingsScreen::DEVICE_INFO: return 10;
         case SettingsScreen::FACTORY_RESET: return 2;
@@ -803,7 +809,9 @@ const char *settingsTitle(SettingsScreen screen) {
         case SettingsScreen::MAIN: return "VICO SETTINGS";
         case SettingsScreen::PROFILE: return "PROFILE";
         case SettingsScreen::OLED: return "OLED";
+        case SettingsScreen::OLED_PAGE: return "DISPLAY CONTENT";
         case SettingsScreen::RGB: return "RGB LIGHT";
+        case SettingsScreen::RGB_EFFECT: return "RGB EFFECT";
         case SettingsScreen::CONNECTION: return "CONNECTION";
         case SettingsScreen::KEY_TEST: return "KEY TEST";
         case SettingsScreen::DEVICE_INFO: return "DEVICE INFO";
@@ -848,19 +856,45 @@ void settingsItemLabel(
             }
             break;
         case SettingsScreen::OLED:
-            if (index == 0) snprintf(destination, destinationSize, "BRIGHTNESS %u%%", deviceSettings.data().oledBrightness);
-            if (index == 1) snprintf(destination, destinationSize, "SLEEP %s", SLEEP_LABELS[deviceSettings.data().oledSleepOption]);
-            if (index == 2) snprintf(destination, destinationSize, "TWIN %s", deviceSettings.data().oledTwinEnabled ? "ON" : "OFF");
-            if (index == 3) snprintf(destination, destinationSize, "PAGE %s", PAGE_LABELS[deviceSettings.data().oledPage]);
+            if (index == 0) snprintf(destination, destinationSize, "CONTENT %s", PAGE_LABELS[deviceSettings.data().oledPage]);
+            if (index == 1) snprintf(destination, destinationSize, "BRIGHTNESS %u%%", deviceSettings.data().oledBrightness);
+            if (index == 2) snprintf(destination, destinationSize, "SLEEP %s", SLEEP_LABELS[deviceSettings.data().oledSleepOption]);
+            if (index == 3) snprintf(destination, destinationSize, "TWIN %s", deviceSettings.data().oledTwinEnabled ? "ON" : "OFF");
             if (index == 4) snprintf(destination, destinationSize, "CLAUDE AUTO %s", deviceSettings.data().oledAutoClaude ? "ON" : "OFF");
             if (index == 5) snprintf(destination, destinationSize, "BACK");
             break;
+        case SettingsScreen::OLED_PAGE:
+            if (index < OLED_PAGE_COUNT) {
+                snprintf(
+                    destination,
+                    destinationSize,
+                    "%s%s",
+                    index == deviceSettings.data().oledPage ? "* " : "  ",
+                    PAGE_LABELS[index]
+                );
+            } else {
+                snprintf(destination, destinationSize, "BACK");
+            }
+            break;
         case SettingsScreen::RGB:
-            if (index == 0) snprintf(destination, destinationSize, "EFFECT %s", rbgLedGetEffectName());
+            if (index == 0) snprintf(destination, destinationSize, "FX %s", rbgLedGetEffectName());
             if (index == 1) snprintf(destination, destinationSize, "BRIGHTNESS %u%%", deviceSettings.data().rgbBrightness);
             if (index == 2) snprintf(destination, destinationSize, "SPEED %u%%", deviceSettings.data().rgbSpeed);
             if (index == 3) snprintf(destination, destinationSize, "LIGHT %s", deviceSettings.data().rgbEnabled ? "ON" : "OFF");
             if (index == 4) snprintf(destination, destinationSize, "BACK");
+            break;
+        case SettingsScreen::RGB_EFFECT:
+            if (index < RBG_EFFECT_COUNT) {
+                snprintf(
+                    destination,
+                    destinationSize,
+                    "%s%s",
+                    index == deviceSettings.data().rgbEffect ? "* " : "  ",
+                    rbgLedEffectName(index)
+                );
+            } else {
+                snprintf(destination, destinationSize, "BACK");
+            }
             break;
         case SettingsScreen::CONNECTION:
             if (index == 0) snprintf(destination, destinationSize, "MODE %s", keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
@@ -994,7 +1028,11 @@ void renderSettingsMenu() {
     commitOledFrame();
 }
 
-void openSettingsScreen(SettingsScreen screen, int8_t direction = 1) {
+void openSettingsScreen(
+    SettingsScreen screen,
+    int8_t direction = 1,
+    uint8_t initialSelection = 0
+) {
     const uint32_t now = millis();
     const SettingsScreen previousScreen = settingsMenu.screen;
     const uint8_t previousSelection = settingsMenu.selection;
@@ -1003,12 +1041,12 @@ void openSettingsScreen(SettingsScreen screen, int8_t direction = 1) {
         static_cast<uint8_t>(previousScreen),
         previousSelection,
         settingsItemCount(previousScreen),
-        0,
+        initialSelection,
         settingsItemCount(screen),
         direction
     );
     settingsMenu.screen = screen;
-    settingsMenu.selection = 0;
+    settingsMenu.selection = initialSelection;
     display_dirty = true;
 }
 
@@ -1039,6 +1077,10 @@ void exitSettingsMenu() {
 void settingsBack() {
     if (settingsMenu.screen == SettingsScreen::MAIN) {
         exitSettingsMenu();
+    } else if (settingsMenu.screen == SettingsScreen::OLED_PAGE) {
+        openSettingsScreen(SettingsScreen::OLED, -1, 0);
+    } else if (settingsMenu.screen == SettingsScreen::RGB_EFFECT) {
+        openSettingsScreen(SettingsScreen::RGB, -1, 0);
     } else {
         openSettingsScreen(SettingsScreen::MAIN, -1);
     }
@@ -1072,15 +1114,19 @@ void selectSettingsItem() {
         }
     } else if (settingsMenu.screen == SettingsScreen::OLED) {
         if (settingsMenu.selection == 0) {
+            openSettingsScreen(
+                SettingsScreen::OLED_PAGE,
+                1,
+                settings.oledPage
+            );
+            return;
+        } else if (settingsMenu.selection == 1) {
             settings.oledBrightness = nextQuarterStep(settings.oledBrightness);
             applyOledSettings();
-        } else if (settingsMenu.selection == 1) {
-            settings.oledSleepOption = (settings.oledSleepOption + 1) % 4;
         } else if (settingsMenu.selection == 2) {
-            settings.oledTwinEnabled = !settings.oledTwinEnabled;
+            settings.oledSleepOption = (settings.oledSleepOption + 1) % 4;
         } else if (settingsMenu.selection == 3) {
-            settings.oledPage = (settings.oledPage + 1) % 6;
-            oledRuntime.setPageSettings(static_cast<OledPage>(settings.oledPage), settings.oledAutoClaude);
+            settings.oledTwinEnabled = !settings.oledTwinEnabled;
         } else if (settingsMenu.selection == 4) {
             settings.oledAutoClaude = !settings.oledAutoClaude;
             oledRuntime.setPageSettings(static_cast<OledPage>(settings.oledPage), settings.oledAutoClaude);
@@ -1088,10 +1134,25 @@ void selectSettingsItem() {
             settingsBack();
         }
         deviceSettings.save();
+    } else if (settingsMenu.screen == SettingsScreen::OLED_PAGE) {
+        if (settingsMenu.selection < OLED_PAGE_COUNT) {
+            settings.oledPage = settingsMenu.selection;
+            oledRuntime.setPageSettings(
+                static_cast<OledPage>(settings.oledPage),
+                settings.oledAutoClaude
+            );
+            deviceSettings.save();
+        }
+        settingsBack();
+        return;
     } else if (settingsMenu.screen == SettingsScreen::RGB) {
         if (settingsMenu.selection == 0) {
-            rbgLedNextEffect();
-            settings.rgbEffect = rbgLedGetEffect();
+            openSettingsScreen(
+                SettingsScreen::RGB_EFFECT,
+                1,
+                settings.rgbEffect
+            );
+            return;
         } else if (settingsMenu.selection == 1) {
             settings.rgbBrightness = nextQuarterStep(settings.rgbBrightness);
         } else if (settingsMenu.selection == 2) {
@@ -1103,6 +1164,14 @@ void selectSettingsItem() {
         }
         applyRgbSettings();
         deviceSettings.save();
+    } else if (settingsMenu.screen == SettingsScreen::RGB_EFFECT) {
+        if (settingsMenu.selection < RBG_EFFECT_COUNT) {
+            settings.rgbEffect = settingsMenu.selection;
+            applyRgbSettings();
+            deviceSettings.save();
+        }
+        settingsBack();
+        return;
     } else if (settingsMenu.screen == SettingsScreen::CONNECTION ||
                settingsMenu.screen == SettingsScreen::DEVICE_INFO) {
         settingsBack();
