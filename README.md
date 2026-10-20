@@ -5,7 +5,7 @@
 <p>面向 Vibe Coding、快捷操作与桌面效率场景的 ESP32-S3 可编程机械小键盘固件</p>
 
 <p>
-  <img alt="Firmware 1.0.2" src="https://img.shields.io/badge/firmware-1.0.2-b6ff2e?style=flat-square&labelColor=161b22" />
+  <img alt="Firmware 1.0.3" src="https://img.shields.io/badge/firmware-1.0.3-b6ff2e?style=flat-square&labelColor=161b22" />
   <img alt="ESP32-S3" src="https://img.shields.io/badge/MCU-ESP32--S3-e7352c?style=flat-square&labelColor=161b22" />
   <img alt="Arduino" src="https://img.shields.io/badge/framework-Arduino-00979d?style=flat-square&labelColor=161b22" />
   <img alt="USB and BLE" src="https://img.shields.io/badge/mode-USB%20%7C%20BLE-3b82f6?style=flat-square&labelColor=161b22" />
@@ -22,7 +22,7 @@
 
 </div>
 
-> 当前正式版本：**1.0.2**
+> 当前正式版本：**1.0.3**
 
 Vico Keyboard 是一款基于 DFRobot FireBeetle 2 ESP32-S3 的 8 键可编程机械小键盘。
 它同时支持 USB HID 与 BLE HID，可驱动 128×64 OLED、8 颗 WS2812B、EC11 旋钮、
@@ -306,6 +306,7 @@ pio run --target upload --upload-port COMx
 │   ├── device_settings.*      # OLED/RGB 设置及 NVS
 │   ├── battery_monitor.*      # GPIO14 采样、滤波、电压和电量换算
 │   ├── rotary_encoder.*       # EC11 正交解码和按键去抖
+│   ├── settings_menu_animation.h # 设置菜单滚动、选中框与页面切换动画
 │   ├── voice_capture.*        # INMP441 I2S 采集、环形缓冲和语音会话
 │   ├── oled_runtime.*         # 配套软件状态、页面数据和 BLE GATT 协议
 │   ├── oled_twin.*            # USB Vendor HID、数字孪生和分片传输

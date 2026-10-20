@@ -49,12 +49,14 @@
 #include "battery_monitor.h"
 #include "font.h"
 #include "device_settings.h"
+#include "firmware_version.h"
 #include "key_profiles.h"
 #include "oled_runtime.h"
 #include "oled_twin.h"
 #include "power_manager.h"
 #include "rbg_led.h"
 #include "rotary_encoder.h"
+#include "settings_menu_animation.h"
 #include "voice_capture.h"
 
 #if !ARDUINO_USB_MODE
@@ -142,6 +144,7 @@ struct SettingsMenuState {
 };
 
 static SettingsMenuState settingsMenu;
+static SettingsMenuAnimation::Controller settingsMenuAnimation;
 
 // =============================================================================
 // 硬件驱动与功能模块对象
@@ -184,6 +187,7 @@ void applyRgbSettings();
 void enterSettingsMenu();
 void exitSettingsMenu();
 void handleSettingsKeyPress(uint8_t index);
+void handleSettingsEncoderSteps(int8_t steps);
 void renderSettingsMenu();
 
 // =============================================================================
@@ -517,7 +521,15 @@ void updateEncoderMedia(uint32_t now) {
         return;
     }
 
-    if (!settingsMenu.active && buttonEvent == RotaryEncoder::ButtonEvent::PRESSED) {
+    // 设置菜单独占旋转事件：顺时针向下、逆时针向上，不向主机发送音量报告。
+    if (settingsMenu.active) {
+        encoderVolumeSteps = 0;
+        encoderMediaAction = ConsumerAction::NONE;
+        if (steps != 0) handleSettingsEncoderSteps(steps);
+        return;
+    }
+
+    if (buttonEvent == RotaryEncoder::ButtonEvent::PRESSED) {
         const bool transportReady = keyboard_mode == KeyboardMode::USB
             ? usb_mounted && oledTwin.voiceReady()
             : bleKeyboard.isConnected() && oledRuntime.voiceReady();
@@ -857,7 +869,7 @@ void settingsItemLabel(
             if (index == 3) snprintf(destination, destinationSize, "GPIO38 %s", mode_switch_raw_usb ? "HIGH" : "LOW");
             break;
         case SettingsScreen::DEVICE_INFO:
-            if (index == 0) snprintf(destination, destinationSize, "FW 0.7.0");
+            if (index == 0) snprintf(destination, destinationSize, "FW %s", VicoFirmwareVersion::TEXT);
             if (index == 1) snprintf(destination, destinationSize, "PROTOCOL 2");
             if (index == 2) snprintf(destination, destinationSize, "PROFILE P%u", keyProfiles.activeProfile() + 1);
             if (index == 3) snprintf(destination, destinationSize, "MODE %s", keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
@@ -879,50 +891,122 @@ void settingsItemLabel(
     }
 }
 
-void drawSettingsList() {
-    const uint8_t count = settingsItemCount(settingsMenu.screen);
-    const uint8_t first = (settingsMenu.selection / 4) * 4;
-    for (uint8_t row = 0; row < 4 && first + row < count; ++row) {
-        const uint8_t item = first + row;
-        const uint8_t y = 13 + row * 13;
-        const bool selected = item == settingsMenu.selection;
-        if (selected) {
-            display.fillRect(0, y, 128, 12, SSD1306_WHITE);
-            display.setTextColor(SSD1306_BLACK);
-        } else {
-            display.setTextColor(SSD1306_WHITE);
-        }
+void drawSettingsList(
+    SettingsScreen screen,
+    uint8_t selection,
+    int16_t xOffset,
+    int16_t scroll,
+    int16_t highlightY
+) {
+    const uint8_t count = settingsItemCount(screen);
 
+    for (uint8_t item = 0; item < count; ++item) {
+        const int16_t y = SettingsMenuAnimation::LIST_TOP +
+            item * SettingsMenuAnimation::ROW_HEIGHT - scroll;
+        if (y <= 10 || y >= SCREEN_HEIGHT) continue;
+
+        display.setTextColor(SSD1306_WHITE);
         char label[22] = {};
-        settingsItemLabel(settingsMenu.screen, item, label, sizeof(label));
-        display.setCursor(3, y + 2);
-        display.print(selected ? "> " : "  ");
+        settingsItemLabel(screen, item, label, sizeof(label));
+        display.setCursor(xOffset + 5, y + 2);
+        display.print(item == selection ? "> " : "  ");
         display.print(label);
+    }
+
+    // 最后用反色方式绘制选中框。框移动经过文字时会自然反色，不会出现黑字悬空。
+    display.fillRoundRect(xOffset, highlightY, 124, 12, 2, SSD1306_INVERSE);
+
+    // 超过四项时显示细滚动条，让用户明确当前位置和列表长度。
+    if (count > SettingsMenuAnimation::VISIBLE_ROWS) {
+        constexpr int16_t trackTop = SettingsMenuAnimation::LIST_TOP;
+        constexpr int16_t trackHeight = 49;
+        const int16_t thumbHeight = trackHeight * SettingsMenuAnimation::VISIBLE_ROWS / count;
+        const int16_t maxScroll =
+            (count - SettingsMenuAnimation::VISIBLE_ROWS) * SettingsMenuAnimation::ROW_HEIGHT;
+        const int16_t thumbY = trackTop + (trackHeight - thumbHeight) * scroll / maxScroll;
+        display.drawFastVLine(xOffset + 126, trackTop, trackHeight, SSD1306_WHITE);
+        display.fillRect(xOffset + 125, thumbY, 3, thumbHeight, SSD1306_WHITE);
+    }
+}
+
+void drawSettingsScreen(
+    SettingsScreen screen,
+    uint8_t selection,
+    int16_t xOffset,
+    int16_t scroll,
+    int16_t highlightY
+) {
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextWrap(false);
+    display.setCursor(xOffset, 0);
+    display.print(settingsTitle(screen));
+    display.drawLine(xOffset, 10, xOffset + 127, 10, SSD1306_WHITE);
+
+    if (screen == SettingsScreen::KEY_TEST) {
+        for (uint8_t index = 0; index < NUM_KEYS; ++index) {
+            // KEY TEST 使用固定布局；页面滑动时通过整体平移画布坐标。
+            const uint8_t column = index % 4;
+            const uint8_t row = index / 4;
+            const int16_t x = xOffset + column * 32;
+            const int16_t y = 15 + row * 18;
+            display.drawRect(x, y, 29, 15, SSD1306_WHITE);
+            if (key_state[index]) display.fillRect(x + 2, y + 2, 25, 11, SSD1306_WHITE);
+            display.setTextColor(key_state[index] ? SSD1306_BLACK : SSD1306_WHITE);
+            display.setCursor(x + 7, y + 4);
+            display.printf("K%u", index + 1);
+        }
+        display.setTextColor(SSD1306_WHITE);
+        display.setCursor(xOffset, 54);
+        display.print("K5 BACK  K8 EXIT");
+    } else {
+        drawSettingsList(screen, selection, xOffset, scroll, highlightY);
     }
 }
 
 void renderSettingsMenu() {
     display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.print(settingsTitle(settingsMenu.screen));
-    display.drawLine(0, 10, 127, 10, SSD1306_WHITE);
-
-    if (settingsMenu.screen == SettingsScreen::KEY_TEST) {
-        for (uint8_t index = 0; index < NUM_KEYS; ++index) {
-            drawKeyBox(index, key_state[index]);
-        }
-        display.setTextColor(SSD1306_WHITE);
-        display.setCursor(0, 54);
-        display.print("K5 BACK  K8 EXIT");
+    const uint32_t now = millis();
+    if (settingsMenuAnimation.transitionActive()) {
+        drawSettingsScreen(
+            static_cast<SettingsScreen>(settingsMenuAnimation.fromScreen()),
+            settingsMenuAnimation.fromSelection(),
+            settingsMenuAnimation.outgoingOffset(now),
+            settingsMenuAnimation.fromScroll(),
+            settingsMenuAnimation.fromHighlightY()
+        );
+        drawSettingsScreen(
+            settingsMenu.screen,
+            settingsMenu.selection,
+            settingsMenuAnimation.incomingOffset(now),
+            settingsMenuAnimation.scroll(),
+            settingsMenuAnimation.highlightY()
+        );
     } else {
-        drawSettingsList();
+        drawSettingsScreen(
+            settingsMenu.screen,
+            settingsMenu.selection,
+            0,
+            settingsMenuAnimation.scroll(),
+            settingsMenuAnimation.highlightY()
+        );
     }
     commitOledFrame();
 }
 
-void openSettingsScreen(SettingsScreen screen) {
+void openSettingsScreen(SettingsScreen screen, int8_t direction = 1) {
+    const uint32_t now = millis();
+    const SettingsScreen previousScreen = settingsMenu.screen;
+    const uint8_t previousSelection = settingsMenu.selection;
+    settingsMenuAnimation.startPageTransition(
+        now,
+        static_cast<uint8_t>(previousScreen),
+        previousSelection,
+        settingsItemCount(previousScreen),
+        0,
+        settingsItemCount(screen),
+        direction
+    );
     settingsMenu.screen = screen;
     settingsMenu.selection = 0;
     display_dirty = true;
@@ -935,6 +1019,7 @@ void enterSettingsMenu() {
     settingsMenu.waitForRelease = true;
     settingsMenu.screen = SettingsScreen::MAIN;
     settingsMenu.selection = 0;
+    settingsMenuAnimation.begin(millis(), settingsMenu.selection, settingsItemCount(settingsMenu.screen));
     profile_notice_until = 0;
     display_dirty = true;
     Serial.println("Settings menu opened");
@@ -955,7 +1040,7 @@ void settingsBack() {
     if (settingsMenu.screen == SettingsScreen::MAIN) {
         exitSettingsMenu();
     } else {
-        openSettingsScreen(SettingsScreen::MAIN);
+        openSettingsScreen(SettingsScreen::MAIN, -1);
     }
 }
 
@@ -1053,6 +1138,8 @@ void handleSettingsKeyPress(uint8_t index) {
         settingsBack();
         return;
     }
+    // 页面滑动仅持续 180ms；期间忽略导航键可避免连续确认造成层级错乱。
+    if (settingsMenuAnimation.transitionActive()) return;
     if (settingsMenu.screen == SettingsScreen::KEY_TEST) {
         display_dirty = true;
         return;
@@ -1068,6 +1155,28 @@ void handleSettingsKeyPress(uint8_t index) {
     } else if (index == 3) { // KEY4：确认
         selectSettingsItem();
     }
+    display_dirty = true;
+}
+
+/**
+ * @brief 使用旋钮移动设置菜单选项。
+ *
+ * RotaryEncoder 正数表示顺时针，映射为向下；负数映射为向上。累计多步会一次
+ * 消费，但仍由菜单动画从当前位置平滑追赶到目标位置。
+ */
+void handleSettingsEncoderSteps(int8_t steps) {
+    if (steps == 0 || settingsMenuAnimation.transitionActive() ||
+        settingsMenu.screen == SettingsScreen::KEY_TEST) {
+        return;
+    }
+
+    const uint8_t count = settingsItemCount(settingsMenu.screen);
+    if (count == 0) return;
+
+    int16_t target = static_cast<int16_t>(settingsMenu.selection) + steps;
+    target %= count;
+    if (target < 0) target += count;
+    settingsMenu.selection = static_cast<uint8_t>(target);
     display_dirty = true;
 }
 
@@ -1612,6 +1721,14 @@ void loop() {
     updateOledSleep(now);
 
     if (oledRuntime.takeDirty()) display_dirty = true;
+
+    // 菜单动画仅在达到下一帧间隔时请求 OLED 重绘，不阻塞本轮按键和通信任务。
+    if (settingsMenu.active && settingsMenuAnimation.update(
+            now,
+            settingsMenu.selection,
+            settingsItemCount(settingsMenu.screen))) {
+        display_dirty = true;
+    }
     OledPage changedPage = OledPage::BRAND;
     bool changedAutoClaude = true;
     if (oledRuntime.takeSettingsChange(changedPage, changedAutoClaude)) {
