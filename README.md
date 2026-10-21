@@ -5,7 +5,7 @@
 <p>面向 Vibe Coding、快捷操作与桌面效率场景的 ESP32-S3 可编程机械小键盘固件</p>
 
 <p>
-  <img alt="Firmware 1.0.4" src="https://img.shields.io/badge/firmware-1.0.4-b6ff2e?style=flat-square&labelColor=161b22" />
+  <img alt="Firmware 1.0.5" src="https://img.shields.io/badge/firmware-1.0.5-b6ff2e?style=flat-square&labelColor=161b22" />
   <img alt="ESP32-S3" src="https://img.shields.io/badge/MCU-ESP32--S3-e7352c?style=flat-square&labelColor=161b22" />
   <img alt="Arduino" src="https://img.shields.io/badge/framework-Arduino-00979d?style=flat-square&labelColor=161b22" />
   <img alt="USB and BLE" src="https://img.shields.io/badge/mode-USB%20%7C%20BLE-3b82f6?style=flat-square&labelColor=161b22" />
@@ -22,7 +22,7 @@
 
 </div>
 
-> 当前正式版本：**1.0.4**
+> 当前正式版本：**1.0.5**
 
 Vico Keyboard 是一款基于 DFRobot FireBeetle 2 ESP32-S3 的 8 键可编程机械小键盘。
 它同时支持 USB HID 与 BLE HID，可驱动 128×64 OLED、8 颗 WS2812B、EC11 旋钮、
@@ -51,7 +51,7 @@ INMP441 数字麦克风和电池电量检测，并通过专用数据通道与
 - 8 个按键、5 套可编辑预设，按键映射和当前预设保存在 NVS 中。
 - EC11 顺时针调高音量、逆时针调低音量。
 - 按住 EC11 开始录音，松开后结束录音并交给配套软件进行云端语音识别。
-- OLED 支持品牌、Coding、性能、时钟、键盘状态和自定义像素画等页面。
+- OLED 支持品牌、Coding、性能、时钟、键盘状态、自定义像素画和 GIF 动画等页面。
 - OLED 数字孪生可将屏幕实际帧缓冲同步到配套软件，而不是重新模拟界面。
 - 8 颗 WS2812B 支持关闭、常亮、呼吸、七彩等模式，并可从配套软件或板载菜单配置。
 - GPIO14 监测单节锂电池电压；电量可同步到 BLE Battery Service 和配套软件。
@@ -186,10 +186,15 @@ INMP441 的 `L/R` 接 GND，电源和逻辑电平使用 3.3V。EC11 公共端 C�
 - 时间与日期。
 - 键盘、连接与按键状态。
 - 自定义 128×64 单色像素画。
+- 从 SPIFFS 循环播放的 128×64 单色 GIF 动画。
 
 页面内容可以通过 USB Vendor HID 或 BLE GATT 更新。自定义像素画以分片方式传输，
 完整数据通过 CRC32 校验后才会显示；用户在软件中执行“保存到键盘”后，图像会写入
 独立 NVS 缓存，软件断开或键盘重启后仍可显示。
+
+VicoDeck 会在电脑端将 GIF 缩放、二值化并编码为 VANI 动画文件，再通过 USB
+Vendor HID 分片写入 SPIFFS。固件采用 A/B 双槽更新并在切换前校验 CRC32，上传中断
+或意外断电不会破坏当前动画。单个动画最大 480 KiB；没有用户动画时播放内置宇航员示例。
 
 数字孪生功能按需回传 SSD1306 的 1024 字节真实帧缓冲并附带 CRC32。软件看到的
 内容与物理 OLED 使用同一份像素数据，不会占用按键扫描的实时路径。
@@ -310,6 +315,8 @@ pio run --target upload --upload-port COMx
 │   ├── voice_capture.*        # INMP441 I2S 采集、环形缓冲和语音会话
 │   ├── oled_runtime.*         # 配套软件状态、页面数据和 BLE GATT 协议
 │   ├── oled_twin.*            # USB Vendor HID、数字孪生和分片传输
+│   ├── oled_animation.*       # SPIFFS 动画双槽存储、校验、解码和播放
+│   ├── astronaut_animation.*  # 无用户动画时使用的内置宇航员示例
 │   ├── rbg_led.*              # WS2812B 灯效及设置应用
 │   ├── font.h
 │   └── font.c                 # OLED 字模和 Claude 图标数据

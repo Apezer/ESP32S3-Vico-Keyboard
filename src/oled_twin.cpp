@@ -13,7 +13,7 @@ namespace {
 // =============================================================================
 // 协议与固件能力常量
 // =============================================================================
-constexpr uint8_t PROTOCOL_VERSION = 2;
+constexpr uint8_t PROTOCOL_VERSION = 3;
 constexpr uint8_t DISPLAY_WIDTH = 128;
 constexpr uint8_t DISPLAY_HEIGHT = 64;
 constexpr uint8_t SSD1306_PAGE_LAYOUT = 1;
@@ -26,13 +26,15 @@ constexpr uint8_t SSD1306_PAGE_LAYOUT = 1;
 void OledTwinTransport::begin(
     KeyProfileManager *profiles,
     OledRuntime *runtime,
-    VoiceCapture *voiceCapture
+    VoiceCapture *voiceCapture,
+    OledAnimation *animation
 ) {
     if (started_) return;
 
     profiles_ = profiles;
     runtime_ = runtime;
     voiceCapture_ = voiceCapture;
+    animation_ = animation;
 
     // 一张自定义像素画会连续发送 42 份报告。接收队列必须能完整容纳
     // 一次突发传输，否则 TinyUSB 来不及逐包处理时会丢失中间分片。
@@ -44,6 +46,12 @@ void OledTwinTransport::begin(
 bool OledTwinTransport::takeProfileChanged() {
     const bool changed = profileChanged_;
     profileChanged_ = false;
+    return changed;
+}
+
+bool OledTwinTransport::takeAnimationChanged() {
+    const bool changed = animationChanged_;
+    animationChanged_ = false;
     return changed;
 }
 
@@ -74,6 +82,7 @@ void OledTwinTransport::resetSession() {
     batteryEventPending_ = false;
     txState_ = TxState::IDLE;
     txOffset_ = 0;
+    if (animation_ != nullptr) animation_->cancelUpload();
 
     // 丢弃属于刚断开主机的命令。
     while (started_ && vendor_.available() > 0) vendor_.read();
@@ -215,6 +224,49 @@ void OledTwinTransport::processHostCommand() {
             break;
         }
 
+        case Command::ANIMATION_BEGIN: {
+            const AnimationResult result = animation_ != nullptr && payloadLength >= 8
+                ? animation_->beginUpload(readUint32(packet + 2), readUint32(packet + 6))
+                : AnimationResult::INVALID_SIZE;
+            queueAnimationAck(command, result);
+            break;
+        }
+
+        case Command::ANIMATION_CHUNK: {
+            const AnimationResult result = animation_ != nullptr && payloadLength >= 5
+                ? animation_->writeUploadChunk(
+                    readUint32(packet + 2),
+                    packet + 6,
+                    payloadLength - 4
+                )
+                : AnimationResult::OFFSET_MISMATCH;
+            queueAnimationAck(command, result);
+            break;
+        }
+
+        case Command::ANIMATION_COMMIT: {
+            const AnimationResult result = animation_ != nullptr
+                ? animation_->commitUpload()
+                : AnimationResult::IO_ERROR;
+            if (result == AnimationResult::OK) animationChanged_ = true;
+            queueAnimationAck(command, result);
+            break;
+        }
+
+        case Command::ANIMATION_DELETE: {
+            const AnimationResult result = animation_ != nullptr
+                ? animation_->deleteStoredAnimation(millis())
+                : AnimationResult::IO_ERROR;
+            if (result == AnimationResult::OK) animationChanged_ = true;
+            queueAnimationAck(command, result);
+            break;
+        }
+
+        case Command::ANIMATION_CANCEL:
+            if (animation_ != nullptr) animation_->cancelUpload();
+            queueAnimationAck(command, AnimationResult::OK);
+            break;
+
         case Command::RUNTIME_UPDATE:
             if (runtime_ != nullptr) runtime_->applyPacket(packet + 2, payloadLength);
             break;
@@ -232,7 +284,8 @@ void OledTwinTransport::processHostCommand() {
 void OledTwinTransport::queueHelloAck() {
     constexpr uint8_t profileCrcOffset = 13;
     constexpr uint8_t batteryOffset = profileCrcOffset + VICO_PROFILE_COUNT * 4;
-    uint8_t payload[batteryOffset + 3] = {
+    constexpr uint8_t animationOffset = batteryOffset + 3;
+    uint8_t payload[animationOffset + 14] = {
         PROTOCOL_VERSION,
         DISPLAY_WIDTH,
         DISPLAY_HEIGHT,
@@ -253,6 +306,21 @@ void OledTwinTransport::queueHelloAck() {
     }
     payload[batteryOffset] = batteryPercent_;
     writeUint16(payload + batteryOffset + 1, batteryMillivolts_);
+    payload[animationOffset] = animation_ != nullptr ? 0x01 : 0x00;
+    writeUint32(
+        payload + animationOffset + 1,
+        animation_ != nullptr ? OledAnimation::MAX_FILE_BYTES : 0
+    );
+    payload[animationOffset + 5] =
+        animation_ != nullptr && animation_->hasStoredAnimation() ? 1 : 0;
+    writeUint32(
+        payload + animationOffset + 6,
+        animation_ != nullptr ? animation_->storedSize() : 0
+    );
+    writeUint32(
+        payload + animationOffset + 10,
+        animation_ != nullptr ? animation_->storedCrc() : 0
+    );
 
     std::memset(controlPacket_, 0, REPORT_BYTES);
     controlPacket_[0] = static_cast<uint8_t>(Command::HELLO_ACK);
@@ -272,6 +340,22 @@ void OledTwinTransport::queueCommandAck(
         static_cast<uint8_t>(result),
         profileIndex,
         static_cast<uint8_t>(profiles_ != nullptr ? profiles_->activeProfile() : 0),
+    };
+
+    std::memset(controlPacket_, 0, REPORT_BYTES);
+    controlPacket_[0] = static_cast<uint8_t>(Command::COMMAND_ACK);
+    controlPacket_[1] = sizeof(payload);
+    std::memcpy(controlPacket_ + 2, payload, sizeof(payload));
+    controlPacket_[REPORT_BYTES - 1] = packetChecksum(controlPacket_);
+    controlPacketPending_ = true;
+}
+
+void OledTwinTransport::queueAnimationAck(Command command, AnimationResult result) {
+    const uint8_t payload[] = {
+        static_cast<uint8_t>(command),
+        static_cast<uint8_t>(result),
+        0,
+        0,
     };
 
     std::memset(controlPacket_, 0, REPORT_BYTES);
@@ -447,4 +531,11 @@ void OledTwinTransport::writeUint32(uint8_t *destination, uint32_t value) {
     destination[1] = (value >> 8) & 0xFF;
     destination[2] = (value >> 16) & 0xFF;
     destination[3] = (value >> 24) & 0xFF;
+}
+
+uint32_t OledTwinTransport::readUint32(const uint8_t *source) {
+    return static_cast<uint32_t>(source[0]) |
+        (static_cast<uint32_t>(source[1]) << 8) |
+        (static_cast<uint32_t>(source[2]) << 16) |
+        (static_cast<uint32_t>(source[3]) << 24);
 }

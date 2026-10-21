@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include "USBHIDVendor.h"
 #include "key_profiles.h"
+#include "oled_animation.h"
 #include "oled_runtime.h"
 #include "voice_capture.h"
 
@@ -28,7 +29,12 @@ public:
     static constexpr size_t FRAME_BYTES = 128 * 64 / 8;
 
     /** 在调用 USB.begin() 前注册 Vendor HID 报告。 */
-    void begin(KeyProfileManager *profiles, OledRuntime *runtime, VoiceCapture *voiceCapture);
+    void begin(
+        KeyProfileManager *profiles,
+        OledRuntime *runtime,
+        VoiceCapture *voiceCapture,
+        OledAnimation *animation
+    );
 
     /** 原生 USB 断开时清除当前主机订阅。 */
     void resetSession();
@@ -47,6 +53,8 @@ public:
 
     /** 命令更改活动预设或其绑定后返回一次 true。 */
     bool takeProfileChanged();
+    /** 动画上传提交或删除后返回一次 true。 */
+    bool takeAnimationChanged();
 
     /** 键盘本地切换预设后，将主动状态事件加入队列。 */
     void notifyActiveProfileChanged();
@@ -70,6 +78,11 @@ private:
         PROFILE_SET_KEY = 0x11,
         PROFILE_COMMIT = 0x12,
         PROFILE_SET_ACTIVE = 0x13,
+        ANIMATION_BEGIN = 0x50,
+        ANIMATION_CHUNK = 0x51,
+        ANIMATION_COMMIT = 0x52,
+        ANIMATION_DELETE = 0x53,
+        ANIMATION_CANCEL = 0x54,
         RUNTIME_UPDATE = 0x40,
         HELLO_ACK = 0x81,
         FRAME_BEGIN = 0x82,
@@ -95,6 +108,7 @@ private:
     KeyProfileManager *profiles_ = nullptr;
     OledRuntime *runtime_ = nullptr;
     VoiceCapture *voiceCapture_ = nullptr;
+    OledAnimation *animation_ = nullptr;
     bool started_ = false;
     bool subscribed_ = false;
     // 控制包和主动事件使用单槽合并队列，始终保留最新状态。
@@ -108,6 +122,7 @@ private:
     uint8_t batteryPercent_ = 0;
     uint16_t batteryMillivolts_ = 0;
     bool profileChanged_ = false;
+    bool animationChanged_ = false;
     // 当前 OLED 帧的分片发送状态。
     TxState txState_ = TxState::IDLE;
     uint16_t nextFrameId_ = 1;
@@ -123,6 +138,7 @@ private:
     void processHostCommand();
     void queueHelloAck();
     void queueCommandAck(Command command, ProfileResult result, uint8_t profileIndex);
+    void queueAnimationAck(Command command, AnimationResult result);
     void startLatestFrame();
     bool sendControlPacket();
     bool sendProfileChanged();
@@ -137,4 +153,5 @@ private:
     static uint32_t calculateCrc32(const uint8_t *data, size_t length);
     static void writeUint16(uint8_t *destination, uint16_t value);
     static void writeUint32(uint8_t *destination, uint32_t value);
+    static uint32_t readUint32(const uint8_t *source);
 };

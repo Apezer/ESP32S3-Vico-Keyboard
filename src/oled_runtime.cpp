@@ -115,7 +115,7 @@ bool OledRuntime::clearCustomBitmap() {
 }
 
 void OledRuntime::configure(OledPage page, bool autoClaude) {
-    if (static_cast<uint8_t>(page) > static_cast<uint8_t>(OledPage::CUSTOM)) {
+    if (static_cast<uint8_t>(page) > static_cast<uint8_t>(OledPage::ANIMATION)) {
         page = OledPage::BRAND;
     }
     state_.configuredPage = page;
@@ -186,7 +186,7 @@ bool OledRuntime::applyPacket(const uint8_t *data, size_t length) {
     }
 
     // SETTINGS：桌面软件选择默认页面或切换 Claude 自动覆盖。
-    if (data[2] == PACKET_SETTINGS && data[3] <= static_cast<uint8_t>(OledPage::CUSTOM)) {
+    if (data[2] == PACKET_SETTINGS && data[3] <= static_cast<uint8_t>(OledPage::ANIMATION)) {
         const OledPage nextPage = static_cast<OledPage>(data[3]);
         const bool nextAutoClaude = data[4] != 0;
         if (nextPage == state_.configuredPage && nextAutoClaude == state_.autoClaude) return true;
@@ -328,8 +328,8 @@ const uint8_t *OledRuntime::customBitmap() const {
 OledPage OledRuntime::cyclePage(int8_t direction) {
     int8_t page = static_cast<int8_t>(state_.configuredPage);
     page += direction >= 0 ? 1 : -1;
-    if (page > static_cast<int8_t>(OledPage::CUSTOM)) page = 0;
-    if (page < 0) page = static_cast<int8_t>(OledPage::CUSTOM);
+    if (page > static_cast<int8_t>(OledPage::ANIMATION)) page = 0;
+    if (page < 0) page = static_cast<int8_t>(OledPage::ANIMATION);
     state_.configuredPage = static_cast<OledPage>(page);
     settingsChanged_ = true;
     dirty_ = true;

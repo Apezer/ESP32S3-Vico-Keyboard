@@ -55,7 +55,7 @@ uint32_t checksum(const uint8_t *bytes, size_t length) {
 
 bool valid(const DeviceSettingsData &data) {
     return data.oledBrightness >= 25 && data.oledBrightness <= 100 &&
-        data.oledSleepOption <= 3 && data.oledPage <= 5 && data.rgbEffect < 8 &&
+        data.oledSleepOption <= 3 && data.oledPage <= 6 && data.rgbEffect < 8 &&
         data.rgbBrightness >= 25 && data.rgbBrightness <= 100 &&
         data.rgbSpeed >= 50 && data.rgbSpeed <= 200;
 }

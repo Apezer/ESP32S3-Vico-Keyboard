@@ -38,6 +38,7 @@
  */
 
 #include <Arduino.h>
+#include <cstring>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -51,6 +52,7 @@
 #include "device_settings.h"
 #include "firmware_version.h"
 #include "key_profiles.h"
+#include "oled_animation.h"
 #include "oled_runtime.h"
 #include "oled_twin.h"
 #include "power_manager.h"
@@ -137,7 +139,7 @@ enum class SettingsScreen : uint8_t {
     FACTORY_RESET,
 };
 
-constexpr uint8_t OLED_PAGE_COUNT = 6;
+constexpr uint8_t OLED_PAGE_COUNT = 7;
 
 /** @brief 设置菜单导航状态；waitForRelease 防止入菜单组合键被重复消费。 */
 struct SettingsMenuState {
@@ -149,12 +151,15 @@ struct SettingsMenuState {
 
 static SettingsMenuState settingsMenu;
 static SettingsMenuAnimation::Controller settingsMenuAnimation;
+// 页面被其他高优先级界面覆盖时暂停播放器，重新进入时从第一帧开始。
+static bool oledAnimationActive = false;
 
 // =============================================================================
 // 硬件驱动与功能模块对象
 // =============================================================================
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 OledRuntime oledRuntime;
+OledAnimation oledAnimation;
 BatteryMonitor batteryMonitor;
 VoiceCapture voiceCapture;
 PowerManager powerManager;
@@ -263,7 +268,7 @@ void startKeyboardInterface(KeyboardMode mode) {
             USB.productName("Vico Keyboard");
             usbKeyboard.begin();
             usbConsumer.begin();
-            oledTwin.begin(&keyProfiles, &oledRuntime, &voiceCapture);
+            oledTwin.begin(&keyProfiles, &oledRuntime, &voiceCapture, &oledAnimation);
             usb_started = USB.begin();
         } else {
             tud_connect();
@@ -834,7 +839,7 @@ void settingsItemLabel(
         "ALWAYS ON", "1 MIN", "5 MIN", "10 MIN",
     };
     static const char *const PAGE_LABELS[] = {
-        "BRAND", "CODING", "SYSTEM", "CLOCK", "DEVICE", "PIXEL ART",
+        "BRAND", "CODING", "SYSTEM", "CLOCK", "DEVICE", "PIXEL ART", "GIF ANIM",
     };
 
     destination[0] = '\0';
@@ -1184,6 +1189,9 @@ void selectSettingsItem() {
             }
             deviceSettings.factoryReset();
             oledRuntime.clearCustomBitmap();
+            // 用户动画属于设备个性化数据，恢复出厂时同时删除 SPIFFS 双槽。
+            oledAnimation.deleteStoredAnimation(millis());
+            oledAnimationActive = false;
             oledRuntime.configure(
                 static_cast<OledPage>(deviceSettings.data().oledPage),
                 deviceSettings.data().oledAutoClaude
@@ -1482,6 +1490,16 @@ void renderCustomRuntimePage() {
     commitOledFrame();
 }
 
+/** @brief 将 SPIFFS 动画或内置回退动画的当前帧复制到 OLED。 */
+void renderAnimationRuntimePage() {
+    std::memcpy(
+        display.getBuffer(),
+        oledAnimation.frame(),
+        OledAnimation::FRAME_BYTES
+    );
+    commitOledFrame();
+}
+
 void renderRuntimePage() {
     const OledRuntimeSnapshot runtime = oledRuntime.snapshot();
     switch (oledRuntime.effectivePage(millis())) {
@@ -1491,6 +1509,7 @@ void renderRuntimePage() {
         case OledPage::CLOCK: renderClockRuntimePage(runtime); break;
         case OledPage::DEVICE: renderDeviceRuntimePage(); break;
         case OledPage::CUSTOM: renderCustomRuntimePage(); break;
+        case OledPage::ANIMATION: renderAnimationRuntimePage(); break;
     }
 }
 
@@ -1598,6 +1617,9 @@ void setup() {
         while (true) delay(1000);
     }
     Serial.println("SSD1306 init OK");
+
+    // SPIFFS 只保存动画资源；挂载或文件校验失败时自动使用内置宇航员示例。
+    oledAnimation.begin(millis());
 
     deviceSettings.begin();
     oledRuntime.begin();
@@ -1843,6 +1865,31 @@ void loop() {
             lastClaudeAnimationAt = now;
             display_dirty = true;
         }
+    }
+
+    // GIF 动画从 SPIFFS 逐帧读取并按文件中的时长非阻塞播放；没有用户动画时
+    // 使用内置宇航员示例。这里只在播放器产生新帧时请求 OLED 重绘。
+    const bool animationVisible =
+        !settingsMenu.active &&
+        !oled_sleeping &&
+        !ble_idle_active &&
+        profile_notice_until == 0 &&
+        !(keyboard_mode == KeyboardMode::USB && !usb_mounted) &&
+        oledRuntime.effectivePage(now) == OledPage::ANIMATION;
+    if (animationVisible) {
+        if (!oledAnimationActive) {
+            oledAnimationActive = true;
+            oledAnimation.restart(now);
+        }
+        if (oledAnimation.update(now)) display_dirty = true;
+    } else {
+        // 再次进入页面时从第 0 帧开始，避免从循环中间突然出现。
+        oledAnimationActive = false;
+    }
+
+    if (oledTwin.takeAnimationChanged()) {
+        oledAnimationActive = false;
+        display_dirty = true;
     }
 
     // USB 由外部供电，永远不会进入此分支；BLE 空闲 10 分钟进入保持

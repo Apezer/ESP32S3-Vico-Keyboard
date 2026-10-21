@@ -20,6 +20,7 @@ enum class OledPage : uint8_t {
     CLOCK = 3,
     DEVICE = 4,
     CUSTOM = 5,
+    ANIMATION = 6,
 };
 
 /** @brief Claude Code 工作状态，数值与桌面端运行时协议保持一致。 */
