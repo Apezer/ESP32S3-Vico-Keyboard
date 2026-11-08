@@ -19,33 +19,18 @@ int32_t rawSamples[READ_SAMPLES] = {};
 void VoiceCapture::begin() {
     // 延迟安装 I2S，确保 BLE/USB HID 在开机阶段先完成初始化。
     microphoneReady_ = false;
-    activeRing_ = usbRing_;
-    activeRingBytes_ = USB_RING_BYTES;
     state_ = State::IDLE;
 }
 
-bool VoiceCapture::ensureBleRing() {
-    if (bleRing_ != nullptr) return true;
+bool VoiceCapture::ensureVoiceRing() {
+    if (voiceRing_ != nullptr) return true;
     if (!psramFound()) return false;
 
-    bleRing_ = static_cast<uint8_t *>(heap_caps_malloc(
-        BLE_RING_BYTES,
+    voiceRing_ = static_cast<uint8_t *>(heap_caps_malloc(
+        VOICE_RING_BYTES,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     ));
-    return bleRing_ != nullptr;
-}
-
-bool VoiceCapture::selectRing(bool useBleBuffer) {
-    if (!useBleBuffer) {
-        activeRing_ = usbRing_;
-        activeRingBytes_ = USB_RING_BYTES;
-        return true;
-    }
-    if (!ensureBleRing()) return false;
-
-    activeRing_ = bleRing_;
-    activeRingBytes_ = BLE_RING_BYTES;
-    return true;
+    return voiceRing_ != nullptr;
 }
 
 bool VoiceCapture::ensureMicrophone() {
@@ -82,13 +67,13 @@ bool VoiceCapture::ensureMicrophone() {
     return true;
 }
 
-bool VoiceCapture::start(uint32_t now, bool transportReady, bool useBleBuffer) {
+bool VoiceCapture::start(uint32_t now, bool transportReady) {
     if (state_ != State::IDLE) return false;
     if (!transportReady) {
         abort(ErrorCode::TRANSPORT_UNAVAILABLE);
         return false;
     }
-    if (!selectRing(useBleBuffer)) {
+    if (!ensureVoiceRing()) {
         abort(ErrorCode::MEMORY_UNAVAILABLE);
         return false;
     }
@@ -97,8 +82,7 @@ bool VoiceCapture::start(uint32_t now, bool transportReady, bool useBleBuffer) {
         return false;
     }
 
-    // BLE 的 512 KB 队列能够容纳约 16.38 秒 PCM，覆盖最长 15 秒录音；
-    // USB 保持原来的 32 KB 内部 RAM 队列，不改变已经验证过的传输行为。
+    // USB 与 BLE 共用 512 KB 队列，可容纳约 16.38 秒 PCM，覆盖最长 15 秒录音。
     resetStream();
     startedAt_ = now;
     ++sessionId_;
@@ -172,15 +156,15 @@ void VoiceCapture::update(uint32_t now) {
 }
 
 bool VoiceCapture::enqueueSample(int16_t sample) {
-    if (activeRingBytes_ - queuedBytes_ < sizeof(sample)) return false;
+    if (VOICE_RING_BYTES - queuedBytes_ < sizeof(sample)) return false;
 
     const uint8_t bytes[] = {
         static_cast<uint8_t>(sample & 0xFF),
         static_cast<uint8_t>((static_cast<uint16_t>(sample) >> 8) & 0xFF),
     };
     for (uint8_t value : bytes) {
-        activeRing_[writeOffset_] = value;
-        writeOffset_ = (writeOffset_ + 1) % activeRingBytes_;
+        voiceRing_[writeOffset_] = value;
+        writeOffset_ = (writeOffset_ + 1) % VOICE_RING_BYTES;
     }
     queuedBytes_ += sizeof(sample);
     producedBytes_ += sizeof(sample);
@@ -228,7 +212,7 @@ bool VoiceCapture::buildNextPacket(uint8_t *destination, size_t capacity, size_t
         writeUint32(destination + 5, sentBytes_);
         const size_t chunkBytes = min(capacity - CHUNK_HEADER_BYTES, queuedBytes_);
         for (size_t index = 0; index < chunkBytes; ++index) {
-            destination[CHUNK_HEADER_BYTES + index] = activeRing_[(readOffset_ + index) % activeRingBytes_];
+            destination[CHUNK_HEADER_BYTES + index] = voiceRing_[(readOffset_ + index) % VOICE_RING_BYTES];
         }
         length = CHUNK_HEADER_BYTES + chunkBytes;
         return true;
@@ -262,7 +246,7 @@ void VoiceCapture::markPacketSent(size_t packetLength) {
     if ((state_ == State::RECORDING || state_ == State::DRAINING) &&
         packetLength >= CHUNK_HEADER_BYTES) {
         const size_t consumed = min(packetLength - CHUNK_HEADER_BYTES, queuedBytes_);
-        readOffset_ = (readOffset_ + consumed) % activeRingBytes_;
+        readOffset_ = (readOffset_ + consumed) % VOICE_RING_BYTES;
         queuedBytes_ -= consumed;
         sentBytes_ += consumed;
         if (state_ == State::DRAINING && queuedBytes_ == 0) state_ = State::END_NOTICE;

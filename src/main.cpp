@@ -48,6 +48,7 @@
 #include "USBHIDKeyboard.h"
 #include "tusb.h"
 #include "battery_monitor.h"
+#include "brand_intro_animation.h"
 #include "font.h"
 #include "device_settings.h"
 #include "firmware_version.h"
@@ -151,6 +152,9 @@ struct SettingsMenuState {
 
 static SettingsMenuState settingsMenu;
 static SettingsMenuAnimation::Controller settingsMenuAnimation;
+static BrandIntroAnimation::Controller brandIntroAnimation;
+// 只在品牌页从不可见变为可见时重启动画，电量或连接状态刷新不会重复触发。
+static bool brandPageVisible = false;
 // 页面被其他高优先级界面覆盖时暂停播放器，重新进入时从第一帧开始。
 static bool oledAnimationActive = false;
 
@@ -544,11 +548,7 @@ void updateEncoderMedia(uint32_t now) {
             : bleKeyboard.isConnected() && oledRuntime.voiceReady();
         releaseAllHid();
         encoderVolumeSteps = 0;
-        if (voiceCapture.start(
-                now,
-                transportReady,
-                keyboard_mode == KeyboardMode::BLE
-            )) {
+        if (voiceCapture.start(now, transportReady)) {
             voiceSuppressKeysUntilRelease = true;
         }
         display_dirty = true;
@@ -1353,32 +1353,125 @@ void drawMetricRow(const char *label, uint8_t value, uint8_t y) {
     }
 }
 
-void renderBrandRuntimePage() {
-    display.clearDisplay();
-    display.setTextColor(SSD1306_WHITE);
-    display.setTextSize(1);
-    display.setCursor(1, 1);
-    display.print(keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
-    drawBatteryPercent(104, 1);
-    display.drawLine(0, 10, 127, 10, SSD1306_WHITE);
+/** @brief 将指定动画阶段映射到 0～1，并限制阶段边界。 */
+float brandPhase(uint32_t elapsed, uint32_t start, uint32_t duration) {
+    if (elapsed <= start) return 0.0f;
+    if (elapsed >= start + duration) return 1.0f;
+    return static_cast<float>(elapsed - start) / static_cast<float>(duration);
+}
 
-    display.setTextSize(2);
-    display.setCursor(4, 15);
-    display.print("VICO");
-    display.setTextSize(1);
-    display.setCursor(5, 40);
-    display.print("CREATE YOUR FLOW");
+/** @brief 起止速度均为零的平滑插值，避免图形突然启动或停止。 */
+float brandSmoothstep(float progress) {
+    return progress * progress * (3.0f - 2.0f * progress);
+}
 
-    static const uint8_t POINTS[][2] = {
+/** @brief 快速进入、柔和减速的插值，用于品牌文字从左侧滑入。 */
+float brandEaseOutCubic(float progress) {
+    const float remaining = 1.0f - progress;
+    return 1.0f - remaining * remaining * remaining;
+}
+
+/** @brief 按时间轴逐段绘制品牌页右侧折线。 */
+void drawBrandGraph(float progress) {
+    static constexpr int16_t POINTS[][2] = {
         {83, 28}, {90, 23}, {97, 32}, {104, 20}, {111, 29}, {124, 22},
     };
-    for (size_t index = 1; index < sizeof(POINTS) / sizeof(POINTS[0]); ++index) {
+    constexpr uint8_t POINT_COUNT = sizeof(POINTS) / sizeof(POINTS[0]);
+    constexpr uint8_t SEGMENT_COUNT = POINT_COUNT - 1;
+    if (progress <= 0.0f) return;
+    if (progress > 1.0f) progress = 1.0f;
+
+    const float scaled = progress * SEGMENT_COUNT;
+    uint8_t completed = static_cast<uint8_t>(scaled);
+    if (completed > SEGMENT_COUNT) completed = SEGMENT_COUNT;
+    for (uint8_t index = 0; index < completed; ++index) {
         display.drawLine(
-            POINTS[index - 1][0], POINTS[index - 1][1],
             POINTS[index][0], POINTS[index][1],
+            POINTS[index + 1][0], POINTS[index + 1][1],
             SSD1306_WHITE
         );
     }
+
+    if (completed >= SEGMENT_COUNT) return;
+    const float local = scaled - completed;
+    const int16_t endX = static_cast<int16_t>(
+        POINTS[completed][0] +
+        (POINTS[completed + 1][0] - POINTS[completed][0]) * local + 0.5f
+    );
+    const int16_t endY = static_cast<int16_t>(
+        POINTS[completed][1] +
+        (POINTS[completed + 1][1] - POINTS[completed][1]) * local + 0.5f
+    );
+    display.drawLine(
+        POINTS[completed][0], POINTS[completed][1],
+        endX, endY,
+        SSD1306_WHITE
+    );
+}
+
+/**
+ * @brief 绘制品牌页；进入页面后的第一秒使用约 30 FPS 开屏动画。
+ *
+ * 动画由顶部线条展开、VICO 滑入、折线生长和标语像素揭示组成。全部图形
+ * 都实时绘制，不占用 SPIFFS，也不会为动画维护多帧位图。
+ */
+void renderBrandRuntimePage(uint32_t now) {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextWrap(false);
+
+    if (!brandIntroAnimation.active()) {
+        display.setTextSize(1);
+        display.setCursor(1, 1);
+        display.print(keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
+        drawBatteryPercent(104, 1);
+        display.drawLine(0, 10, 127, 10, SSD1306_WHITE);
+        display.setTextSize(2);
+        display.setCursor(4, 15);
+        display.print("VICO");
+        drawBrandGraph(1.0f);
+        display.setTextSize(1);
+        display.setCursor(5, 40);
+        display.print("CREATE YOUR FLOW");
+        commitOledFrame();
+        return;
+    }
+
+    const uint32_t elapsed = brandIntroAnimation.elapsed(now);
+
+    // 状态栏先出现，分隔线在最初 240ms 内从左向右平滑展开。
+    if (elapsed >= 35) {
+        display.setTextSize(1);
+        display.setCursor(1, 1);
+        display.print(keyboard_mode == KeyboardMode::USB ? "USB" : "BLE");
+    }
+    if (elapsed >= 90) drawBatteryPercent(104, 1);
+    const float headerProgress = brandSmoothstep(brandPhase(elapsed, 0, 240));
+    const int16_t headerEnd = static_cast<int16_t>(127.0f * headerProgress + 0.5f);
+    if (headerEnd > 0) display.drawLine(0, 10, headerEnd, 10, SSD1306_WHITE);
+
+    // VICO 从屏幕左侧滑入，使用 ease-out 让收尾更柔和。
+    const float wordProgress = brandEaseOutCubic(brandPhase(elapsed, 70, 410));
+    const int16_t wordX = static_cast<int16_t>(-38.0f + 42.0f * wordProgress + 0.5f);
+    display.setTextSize(2);
+    display.setCursor(wordX, 15);
+    display.print("VICO");
+
+    // 右侧折线在文字进入后逐像素生长，而不是按整段跳变。
+    const float graphProgress = brandSmoothstep(brandPhase(elapsed, 230, 520));
+    drawBrandGraph(graphProgress);
+
+    // 标语先完整绘制，再用黑色遮罩逐像素揭示，得到比逐字符更顺滑的效果。
+    const float subtitleProgress = brandSmoothstep(brandPhase(elapsed, 500, 390));
+    display.setTextSize(1);
+    display.setCursor(5, 40);
+    display.print("CREATE YOUR FLOW");
+    constexpr int16_t SUBTITLE_WIDTH = 96;
+    const int16_t revealed = static_cast<int16_t>(SUBTITLE_WIDTH * subtitleProgress + 0.5f);
+    if (revealed < SUBTITLE_WIDTH) {
+        display.fillRect(5 + revealed, 39, SUBTITLE_WIDTH - revealed + 1, 10, SSD1306_BLACK);
+    }
+
     commitOledFrame();
 }
 
@@ -1501,9 +1594,10 @@ void renderAnimationRuntimePage() {
 }
 
 void renderRuntimePage() {
+    const uint32_t now = millis();
     const OledRuntimeSnapshot runtime = oledRuntime.snapshot();
-    switch (oledRuntime.effectivePage(millis())) {
-        case OledPage::BRAND: renderBrandRuntimePage(); break;
+    switch (oledRuntime.effectivePage(now)) {
+        case OledPage::BRAND: renderBrandRuntimePage(now); break;
         case OledPage::CLAUDE: renderClaudeRuntimePage(runtime); break;
         case OledPage::SYSTEM: renderSystemRuntimePage(runtime); break;
         case OledPage::CLOCK: renderClockRuntimePage(runtime); break;
@@ -1511,6 +1605,24 @@ void renderRuntimePage() {
         case OledPage::CUSTOM: renderCustomRuntimePage(); break;
         case OledPage::ANIMATION: renderAnimationRuntimePage(); break;
     }
+}
+
+/**
+ * @brief 返回品牌页此刻是否真正占据 OLED。
+ *
+ * 必须把设置菜单、语音、USB 提示、预设提示和休眠都视为“离开品牌页”，
+ * 这样这些高优先级画面结束后返回品牌页时才会重新播放开屏动画。
+ */
+bool brandRuntimePageIsVisible(uint32_t now) {
+    const bool profileNoticeActive = profile_notice_until != 0 &&
+        static_cast<int32_t>(profile_notice_until - now) > 0;
+    return !voiceCapture.active() &&
+        !settingsMenu.active &&
+        !oled_sleeping &&
+        !ble_idle_active &&
+        !profileNoticeActive &&
+        !(keyboard_mode == KeyboardMode::USB && !usb_mounted) &&
+        oledRuntime.effectivePage(now) == OledPage::BRAND;
 }
 
 /** @brief 绘制录音、排空或错误状态；语音会话期间覆盖普通 OLED 页面。 */
@@ -1659,7 +1771,10 @@ void setup() {
     // HID 服务优先完成启动；麦克风 I2S 在首次按压旋钮时才真正安装。
     voiceCapture.begin();
 
-    // 跳过 Claude Code 开机画面，直接显示键盘状态。
+    // 跳过 Claude Code 开机画面；若默认页面是品牌页，则从开屏动画第 0 帧开始。
+    const uint32_t initialDisplayAt = millis();
+    brandPageVisible = brandRuntimePageIsVisible(initialDisplayAt);
+    if (brandPageVisible) brandIntroAnimation.begin(initialDisplayAt);
     renderKeyStatus();
     display_dirty = false;
 
@@ -1683,6 +1798,12 @@ void loop() {
     // 旋钮按压决定是否进入语音独占状态，因此必须先于按键、RGB 和后台同步处理。
     updateEncoderMedia(now);
     if (voiceCapture.active()) {
+        // 语音界面拥有最高显示优先级。先标记品牌页已离开，语音结束后下一轮
+        // 回到品牌页时才能从开屏动画第 0 帧重新进入。
+        if (brandPageVisible) {
+            brandPageVisible = false;
+            brandIntroAnimation.stop();
+        }
         const bool transportReady = keyboard_mode == KeyboardMode::USB
             ? usb_mounted && oledTwin.voiceReady()
             : bleKeyboard.isConnected() && oledRuntime.voiceReady();
@@ -1813,6 +1934,17 @@ void loop() {
 
     if (oledRuntime.takeDirty()) display_dirty = true;
 
+    // 只在品牌页真正“进入”时启动一次动画。普通运行数据、电量或连接状态更新
+    // 只重绘当前帧，不会把开屏动画反复重置到第 0 帧。
+    const bool brandVisibleNow = brandRuntimePageIsVisible(now);
+    if (brandVisibleNow != brandPageVisible) {
+        brandPageVisible = brandVisibleNow;
+        if (brandPageVisible) brandIntroAnimation.begin(now);
+        else brandIntroAnimation.stop();
+        display_dirty = true;
+    }
+    if (brandPageVisible && brandIntroAnimation.update(now)) display_dirty = true;
+
     // 菜单动画仅在达到下一帧间隔时请求 OLED 重绘，不阻塞本轮按键和通信任务。
     if (settingsMenu.active && settingsMenuAnimation.update(
             now,
@@ -1910,8 +2042,11 @@ void loop() {
     if (keyboard_mode == KeyboardMode::BLE && !bleKeyboard.isConnected() &&
         !settingsMenu.active) {
         static unsigned long last_draw = 0;
-        if (now - last_draw > 500) {
+        // 品牌开屏动画会以约 30 FPS 设置 display_dirty；其他页面仍维持原来的
+        // 500ms 离线刷新节拍，避免无意义地占用 I2C 总线。
+        if (display_dirty || now - last_draw > 500) {
             last_draw = now;
+            display_dirty = false;
             renderKeyStatus();
         }
         return;
