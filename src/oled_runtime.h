@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include "key_profiles.h"
 #include "voice_capture.h"
 
 /** @brief 用户可以选择的 OLED 页面编号，数值属于持久化和通信协议。 */
@@ -142,6 +143,12 @@ public:
     void handleBleDisconnect(uint16_t connectionHandle);
     /** @brief 绑定语音采集模块，供 BLE 通知通道独占发送音频。 */
     void attachVoiceCapture(VoiceCapture *voiceCapture) { voiceCapture_ = voiceCapture; }
+    /** @brief 绑定按键预设管理器，使同一 GATT 服务也能同步五套预设。 */
+    void attachKeyProfiles(KeyProfileManager *profiles) { profiles_ = profiles; }
+    /** @brief 消费一次由蓝牙命令产生的预设变化。 */
+    bool takeProfileChanged();
+    /** @brief 键盘本地切换预设后，通过 GATT 主动通知配套软件。 */
+    void notifyActiveProfileChanged();
     /** @brief 配套软件已经订阅语音会话且 GATT 通道有效时返回 true。 */
     bool voiceReady() const { return tx_ != nullptr && voiceSessionActive_; }
     /** @brief 使用当前协商 MTU 尽可能发送一份语音包。 */
@@ -165,6 +172,20 @@ private:
     static constexpr uint8_t PACKET_VOICE_SESSION = 9;
     static constexpr size_t BITMAP_BYTES = 128 * 64 / 8;
 
+    // 蓝牙预设子协议使用独立包头，与 USB 复用命令编号和 5 字节 KeyBinding。
+    static constexpr uint8_t PROFILE_MAGIC = 0xB7;
+    static constexpr uint8_t PROFILE_VERSION = 1;
+    static constexpr uint8_t PROFILE_HELLO = 0x01;
+    static constexpr uint8_t PROFILE_BEGIN = 0x10;
+    static constexpr uint8_t PROFILE_SET_KEY = 0x11;
+    static constexpr uint8_t PROFILE_COMMIT = 0x12;
+    static constexpr uint8_t PROFILE_SET_ACTIVE = 0x13;
+    static constexpr uint8_t PROFILE_GET_CRC = 0x14;
+    static constexpr uint8_t PROFILE_HELLO_ACK = 0x81;
+    static constexpr uint8_t PROFILE_ACK = 0x90;
+    static constexpr uint8_t PROFILE_ACTIVE_CHANGED = 0x91;
+    static constexpr uint8_t PROFILE_CRC = 0x94;
+
     // 当前正式运行状态和主循环使用的单次变化标记。
     OledRuntimeSnapshot state_ = {};
     bool dirty_ = true;
@@ -174,7 +195,9 @@ private:
     // BLE characteristic 仅在 BLE 协议栈存活期间有效。
     NimBLECharacteristic *rx_ = nullptr;
     NimBLECharacteristic *tx_ = nullptr;
+    KeyProfileManager *profiles_ = nullptr;
     VoiceCapture *voiceCapture_ = nullptr;
+    bool profileChanged_ = false;
     bool voiceSessionActive_ = false;
     uint16_t voiceConnectionHandle_ = BLE_HS_CONN_HANDLE_NONE;
     uint16_t voiceMtu_ = 23;
@@ -191,6 +214,19 @@ private:
     static uint32_t calculateCrc32(const uint8_t *data, size_t length);
     bool loadCustomBitmap();
     bool saveCustomBitmap(uint32_t expectedCrc) const;
+    bool handleProfilePacket(const uint8_t *data, size_t length, uint16_t connectionHandle);
+    void notifyProfilePacket(
+        uint8_t command,
+        const uint8_t *payload,
+        size_t payloadLength,
+        uint16_t connectionHandle = BLE_HS_CONN_HANDLE_NONE
+    );
+    void notifyProfileAck(
+        uint8_t acknowledgedCommand,
+        ProfileResult result,
+        uint8_t profileIndex,
+        uint16_t connectionHandle
+    );
     void notifyPage();
     void notifyJsonAck();
 };

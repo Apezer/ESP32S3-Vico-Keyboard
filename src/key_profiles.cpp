@@ -223,7 +223,7 @@ bool KeyProfileManager::isValidBinding(const KeyBinding &candidate) {
         case KeyActionType::CONSUMER:
             return candidate.modifiers == 0 && candidate.keycode == 0 &&
                 candidate.consumer >= static_cast<uint16_t>(ConsumerAction::PREVIOUS_TRACK) &&
-                candidate.consumer <= static_cast<uint16_t>(ConsumerAction::STOP);
+                candidate.consumer <= static_cast<uint16_t>(ConsumerAction::EMAIL_READER);
         case KeyActionType::FN:
             return candidate.modifiers == 0 && candidate.keycode == 0 && candidate.consumer == 0;
     }
@@ -263,6 +263,15 @@ void KeyProfileManager::labelForBinding(
             case ConsumerAction::VOLUME_DOWN: std::snprintf(destination, destinationSize, "V-"); return;
             case ConsumerAction::VOLUME_UP: std::snprintf(destination, destinationSize, "V+"); return;
             case ConsumerAction::STOP: std::snprintf(destination, destinationSize, "STOP"); return;
+            case ConsumerAction::WWW_HOME: std::snprintf(destination, destinationSize, "WEB"); return;
+            case ConsumerAction::LOCAL_BROWSER: std::snprintf(destination, destinationSize, "PC"); return;
+            case ConsumerAction::CALCULATOR: std::snprintf(destination, destinationSize, "CALC"); return;
+            case ConsumerAction::WWW_BOOKMARKS: std::snprintf(destination, destinationSize, "FAV"); return;
+            case ConsumerAction::WWW_SEARCH: std::snprintf(destination, destinationSize, "SRCH"); return;
+            case ConsumerAction::WWW_STOP: std::snprintf(destination, destinationSize, "WSTP"); return;
+            case ConsumerAction::WWW_BACK: std::snprintf(destination, destinationSize, "BACK"); return;
+            case ConsumerAction::MEDIA_SELECT: std::snprintf(destination, destinationSize, "MED"); return;
+            case ConsumerAction::EMAIL_READER: std::snprintf(destination, destinationSize, "MAIL"); return;
             default: std::snprintf(destination, destinationSize, "MED"); return;
         }
     }

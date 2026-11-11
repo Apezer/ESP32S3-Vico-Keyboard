@@ -483,6 +483,15 @@ uint16_t usbConsumerUsage(ConsumerAction action) {
         case ConsumerAction::VOLUME_DOWN: return CONSUMER_CONTROL_VOLUME_DECREMENT;
         case ConsumerAction::VOLUME_UP: return CONSUMER_CONTROL_VOLUME_INCREMENT;
         case ConsumerAction::STOP: return CONSUMER_CONTROL_STOP;
+        case ConsumerAction::WWW_HOME: return CONSUMER_CONTROL_HOME;
+        case ConsumerAction::LOCAL_BROWSER: return CONSUMER_CONTROL_LOCAL_BROWSER;
+        case ConsumerAction::CALCULATOR: return CONSUMER_CONTROL_CALCULATOR;
+        case ConsumerAction::WWW_BOOKMARKS: return CONSUMER_CONTROL_BOOKMARKS;
+        case ConsumerAction::WWW_SEARCH: return CONSUMER_CONTROL_SEARCH;
+        case ConsumerAction::WWW_STOP: return CONSUMER_CONTROL_BR_STOP;
+        case ConsumerAction::WWW_BACK: return CONSUMER_CONTROL_BACK;
+        case ConsumerAction::MEDIA_SELECT: return CONSUMER_CONTROL_CONFIGURATION;
+        case ConsumerAction::EMAIL_READER: return CONSUMER_CONTROL_EMAIL_READER;
         default: return 0;
     }
 }
@@ -503,6 +512,15 @@ void pressConsumer(ConsumerAction action) {
         case ConsumerAction::VOLUME_DOWN: bleKeyboard.press(KEY_MEDIA_VOLUME_DOWN); break;
         case ConsumerAction::VOLUME_UP: bleKeyboard.press(KEY_MEDIA_VOLUME_UP); break;
         case ConsumerAction::STOP: bleKeyboard.press(KEY_MEDIA_STOP); break;
+        case ConsumerAction::WWW_HOME: bleKeyboard.press(KEY_MEDIA_WWW_HOME); break;
+        case ConsumerAction::LOCAL_BROWSER: bleKeyboard.press(KEY_MEDIA_LOCAL_MACHINE_BROWSER); break;
+        case ConsumerAction::CALCULATOR: bleKeyboard.press(KEY_MEDIA_CALCULATOR); break;
+        case ConsumerAction::WWW_BOOKMARKS: bleKeyboard.press(KEY_MEDIA_WWW_BOOKMARKS); break;
+        case ConsumerAction::WWW_SEARCH: bleKeyboard.press(KEY_MEDIA_WWW_SEARCH); break;
+        case ConsumerAction::WWW_STOP: bleKeyboard.press(KEY_MEDIA_WWW_STOP); break;
+        case ConsumerAction::WWW_BACK: bleKeyboard.press(KEY_MEDIA_WWW_BACK); break;
+        case ConsumerAction::MEDIA_SELECT: bleKeyboard.press(KEY_MEDIA_CONSUMER_CONTROL_CONFIGURATION); break;
+        case ConsumerAction::EMAIL_READER: bleKeyboard.press(KEY_MEDIA_EMAIL_READER); break;
         default: break;
     }
 }
@@ -629,6 +647,7 @@ ProfileResult activateProfileFromKeyboard(uint8_t profileIndex) {
     const ProfileResult result = keyProfiles.setActiveProfile(profileIndex);
     if (result == ProfileResult::OK && keyProfiles.activeProfile() != previousProfile) {
         oledTwin.notifyActiveProfileChanged();
+        oledRuntime.notifyActiveProfileChanged();
     }
     return result;
 }
@@ -1186,6 +1205,7 @@ void selectSettingsItem() {
             keyProfiles.factoryReset();
             if (keyProfiles.activeProfile() != previousProfile) {
                 oledTwin.notifyActiveProfileChanged();
+                oledRuntime.notifyActiveProfileChanged();
             }
             deviceSettings.factoryReset();
             oledRuntime.clearCustomBitmap();
@@ -1747,6 +1767,7 @@ void setup() {
 
     // 在键盘接口启动前加载五套可编辑预设。
     keyProfiles.begin();
+    oledRuntime.attachKeyProfiles(&keyProfiles);
 
     // 初始化按键输入引脚。
     for (uint8_t i = 0; i < NUM_KEYS; i++) {
@@ -2063,6 +2084,16 @@ void loop() {
     oledTwin.update(keyboard_mode == KeyboardMode::USB && usb_mounted);
 
     if (oledTwin.takeProfileChanged()) {
+        wakeOled();
+        releaseAllHid();
+        resetKeyTracking();
+        profile_notice_until = millis() + 900;
+        display_dirty = true;
+    }
+
+    // 蓝牙 GATT 与 USB 预设事务采用相同的提交后刷新流程。只在完整预设
+    // 已通过 CRC 校验并写入 NVS 后重建 HID 状态，按键扫描不会看到半套配置。
+    if (oledRuntime.takeProfileChanged()) {
         wakeOled();
         releaseAllHid();
         resetKeyTracking();

@@ -394,6 +394,18 @@ void OledRuntime::handleBleDisconnect(uint16_t connectionHandle) {
     }
 }
 
+bool OledRuntime::takeProfileChanged() {
+    const bool changed = profileChanged_;
+    profileChanged_ = false;
+    return changed;
+}
+
+void OledRuntime::notifyActiveProfileChanged() {
+    if (profiles_ == nullptr || tx_ == nullptr) return;
+    const uint8_t payload[] = {profiles_->activeProfile()};
+    notifyProfilePacket(PROFILE_ACTIVE_CHANGED, payload, sizeof(payload));
+}
+
 void OledRuntime::updateBleVoice(uint32_t now) {
     if (!voiceReady() || voiceCapture_ == nullptr || !voiceCapture_->active() ||
         now - lastVoicePacketAt_ < 1) return;
@@ -423,11 +435,144 @@ void OledRuntime::onWrite(NimBLECharacteristic *characteristic, NimBLEConnInfo &
         return;
     }
     const uint8_t *bytes = reinterpret_cast<const uint8_t *>(value.data());
+    // 蓝牙预设包有独立 magic，必须在 32 字节运行时协议和语音协议之前分流。
+    if (handleProfilePacket(bytes, value.size(), connInfo.getConnHandle())) return;
     if (validPacket(bytes, value.size()) && bytes[2] == PACKET_VOICE_SESSION) {
         voiceConnectionHandle_ = connInfo.getConnHandle();
         voiceMtu_ = connInfo.getMTU();
     }
     applyPacket(bytes, value.size());
+}
+
+bool OledRuntime::handleProfilePacket(
+    const uint8_t *data,
+    size_t length,
+    uint16_t connectionHandle
+) {
+    if (data == nullptr || length < 3 || data[0] != PROFILE_MAGIC) return false;
+
+    const uint8_t command = data[2];
+    if (data[1] != PROFILE_VERSION) {
+        notifyProfileAck(command, ProfileResult::INVALID_BINDING, 0xFF, connectionHandle);
+        return true;
+    }
+
+    if (command == PROFILE_HELLO) {
+        const uint8_t payload[] = {
+            PROFILE_VERSION,
+            VICO_PROFILE_COUNT,
+            static_cast<uint8_t>(profiles_ != nullptr ? profiles_->activeProfile() : 0),
+        };
+        notifyProfilePacket(PROFILE_HELLO_ACK, payload, sizeof(payload), connectionHandle);
+        return true;
+    }
+
+    if (command == PROFILE_GET_CRC) {
+        const uint8_t profileIndex = length >= 4 ? data[3] : 0xFF;
+        const uint32_t crc = profiles_ != nullptr && profileIndex < VICO_PROFILE_COUNT
+            ? profiles_->storedProfileCrc(profileIndex)
+            : 0;
+        const uint8_t payload[] = {
+            profileIndex,
+            static_cast<uint8_t>(crc & 0xFF),
+            static_cast<uint8_t>((crc >> 8) & 0xFF),
+            static_cast<uint8_t>((crc >> 16) & 0xFF),
+            static_cast<uint8_t>((crc >> 24) & 0xFF),
+        };
+        notifyProfilePacket(PROFILE_CRC, payload, sizeof(payload), connectionHandle);
+        return true;
+    }
+
+    const uint8_t profileIndex = length >= 4 ? data[3] : 0xFF;
+    if (voiceCapture_ != nullptr && voiceCapture_->active()) {
+        notifyProfileAck(command, ProfileResult::BUSY, profileIndex, connectionHandle);
+        return true;
+    }
+
+    ProfileResult result = ProfileResult::INVALID_BINDING;
+    switch (command) {
+        case PROFILE_BEGIN:
+            if (profiles_ != nullptr && length >= 5 && data[3] == PROFILE_VERSION) {
+                result = profiles_->beginUpdate(data[4]);
+                notifyProfileAck(command, result, data[4], connectionHandle);
+            } else {
+                notifyProfileAck(command, result, 0xFF, connectionHandle);
+            }
+            return true;
+
+        case PROFILE_SET_KEY:
+            if (profiles_ != nullptr && length >= 10) {
+                const KeyBinding binding = {
+                    static_cast<KeyActionType>(data[5]),
+                    data[6],
+                    data[7],
+                    static_cast<uint16_t>(data[8] | (data[9] << 8)),
+                };
+                result = profiles_->setPendingKey(data[3], data[4], binding);
+            }
+            notifyProfileAck(command, result, profileIndex, connectionHandle);
+            return true;
+
+        case PROFILE_COMMIT:
+            if (profiles_ != nullptr && length >= 9) {
+                const uint32_t expectedCrc =
+                    static_cast<uint32_t>(data[5]) |
+                    (static_cast<uint32_t>(data[6]) << 8) |
+                    (static_cast<uint32_t>(data[7]) << 16) |
+                    (static_cast<uint32_t>(data[8]) << 24);
+                result = profiles_->commitUpdate(data[3], expectedCrc, data[4] != 0);
+                if (result == ProfileResult::OK) profileChanged_ = true;
+            }
+            notifyProfileAck(command, result, profileIndex, connectionHandle);
+            return true;
+
+        case PROFILE_SET_ACTIVE:
+            result = profiles_ != nullptr && length >= 4
+                ? profiles_->setActiveProfile(data[3])
+                : ProfileResult::INVALID_SLOT;
+            if (result == ProfileResult::OK) profileChanged_ = true;
+            notifyProfileAck(command, result, profileIndex, connectionHandle);
+            return true;
+
+        default:
+            notifyProfileAck(command, ProfileResult::INVALID_BINDING, profileIndex, connectionHandle);
+            return true;
+    }
+}
+
+void OledRuntime::notifyProfilePacket(
+    uint8_t command,
+    const uint8_t *payload,
+    size_t payloadLength,
+    uint16_t connectionHandle
+) {
+    if (tx_ == nullptr || payloadLength > 17) return;
+    uint8_t packet[20] = {PROFILE_MAGIC, PROFILE_VERSION, command};
+    if (payload != nullptr && payloadLength > 0) {
+        std::memcpy(packet + 3, payload, payloadLength);
+    }
+    const size_t packetLength = payloadLength + 3;
+    if (connectionHandle != BLE_HS_CONN_HANDLE_NONE) {
+        tx_->notify(packet, packetLength, connectionHandle);
+    } else {
+        tx_->setValue(packet, packetLength);
+        tx_->notify();
+    }
+}
+
+void OledRuntime::notifyProfileAck(
+    uint8_t acknowledgedCommand,
+    ProfileResult result,
+    uint8_t profileIndex,
+    uint16_t connectionHandle
+) {
+    const uint8_t payload[] = {
+        acknowledgedCommand,
+        static_cast<uint8_t>(result),
+        profileIndex,
+        static_cast<uint8_t>(profiles_ != nullptr ? profiles_->activeProfile() : 0),
+    };
+    notifyProfilePacket(PROFILE_ACK, payload, sizeof(payload), connectionHandle);
 }
 
 // =============================================================================

@@ -40,6 +40,15 @@ enum class ConsumerAction : uint16_t {
     VOLUME_DOWN = 5,
     VOLUME_UP = 6,
     STOP = 7,
+    WWW_HOME = 8,
+    LOCAL_BROWSER = 9,
+    CALCULATOR = 10,
+    WWW_BOOKMARKS = 11,
+    WWW_SEARCH = 12,
+    WWW_STOP = 13,
+    WWW_BACK = 14,
+    MEDIA_SELECT = 15,
+    EMAIL_READER = 16,
 };
 
 /**
