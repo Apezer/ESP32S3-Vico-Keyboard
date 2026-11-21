@@ -126,8 +126,10 @@ INMP441 的 `L/R` 接 GND，电源和逻辑电平使用 3.3V。EC11 公共端 C�
 | 操作 | 功能 |
 | --- | --- |
 | KEY1～KEY8 | 左、下、右、Enter、Backspace、上、Ctrl+Win、Fn |
-| Fn + KEY1～KEY5 | 切换 P1～P5 预设，组合键不会发送给电脑 |
-| Fn + KEY6 / KEY7 | 向前/向后切换 OLED 页面 |
+| Fn + KEY1 / KEY2 / KEY3 | 切换 P1 / P2 / P3 预设，组合键不会发送给电脑 |
+| Fn + KEY7 / KEY6 | 切换 P4 / P5 预设，组合键不会发送给电脑 |
+| Fn + KEY5 | 切换到下一个 OLED 页面 |
+| KEY4 + KEY8 | 进入设备设置菜单 |
 | KEY4 + KEY8 | 打开板载设置菜单 |
 | EC11 顺时针/逆时针 | 音量加/音量减 |
 | 按住 EC11 | 开始语音录音 |

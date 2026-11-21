@@ -661,20 +661,28 @@ void handleKeyPress(uint8_t index) {
         return;
     }
 
-    if (fn_pressed && index < VICO_PROFILE_COUNT) {
+    // KEY4 与 KEY8 保留为物理设置菜单组合，因此五套预设改用：
+    // KEY1/2/3 -> P1/2/3，KEY7 -> P4，KEY6 -> P5。
+    int8_t profileIndex = -1;
+    if (index <= 2) profileIndex = index;
+    else if (index == 6) profileIndex = 3;
+    else if (index == 5) profileIndex = 4;
+
+    if (fn_pressed && profileIndex >= 0) {
         profile_switch_consumed[index] = true;
-        const ProfileResult result = activateProfileFromKeyboard(index);
+        const ProfileResult result = activateProfileFromKeyboard(static_cast<uint8_t>(profileIndex));
         if (result == ProfileResult::OK) {
             profile_notice_until = millis() + 900;
-            Serial.printf("Active profile changed to P%u\n", index + 1);
+            Serial.printf("Active profile changed to P%u\n", profileIndex + 1);
         }
         rebuildHidState();
         return;
     }
 
-    if (fn_pressed && (index == 5 || index == 6)) {
+    // KEY5 只向后循环 OLED 页面，避免与 P4/P5 的快捷组合冲突。
+    if (fn_pressed && index == 4) {
         profile_switch_consumed[index] = true;
-        oledRuntime.cyclePage(index == 5 ? -1 : 1);
+        oledRuntime.cyclePage(1);
         display_dirty = true;
         rebuildHidState();
         return;
